@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="bulter-token" content="__SESSION_TOKEN__">
+  <title>My Bulter Enterprise</title>
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="My Bulter Enterprise home"><span class="brand-mark">b<span>·</span></span><span>my bulter<small>ENTERPRISE</small></span></a>
+  <div class="workspace"><span class="workspace-avatar">MB</span><div>My workspace<small>Personal · on this Mac</small></div><span class="workspace-dot"></span></div>
+  <div class="nav-label">WORKSPACE</div>
+  <nav aria-label="Main navigation">
+    <button data-view="bulters" class="nav active"><span>◈</span> Bulters <span id="nav-count" class="count">0</span></button>
+    <button data-view="missions" class="nav"><span>↗</span> Missions</button>
+    <button data-view="memory" class="nav"><span>▤</span> Memory</button>
+    <button data-view="models" class="nav"><span>⌘</span> Models & connections</button>
+  </nav>
+  <div class="sidebar-bottom"><div class="local-dot"></div><div>Built around your Mac<small>Local-first · explicit cloud access</small></div></div>
+</aside>
+<main>
+  <header class="topbar"><span>Workspace <span class="slash">/</span> <span id="breadcrumb">Bulters</span></span><span class="phase-pill">PHASE 01 <span>·</span> LOCAL PREVIEW</span></header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section id="view-bulters" class="view">
+    <div class="page-heading"><div><p class="eyebrow">YOUR AI TEAM, YOUR WAY</p><h1>A little help.<br>A lot of possibility.</h1><p class="subtitle">Specialist Bulters. Models of your choice. Working together.</p></div><button class="primary" id="new-bulter">＋ Create Bulter</button></div>
+    <div class="stats"><div><span>YOUR BULTERS</span><strong id="stat-bulters">0</strong><small>Purpose-built teammates</small></div><div><span>LOCAL MODELS</span><strong id="stat-models">—</strong><small id="model-note">Checking your connections</small></div><div><span>SHARED MEMORIES</span><strong id="stat-memory">0</strong><small>Only shared when you choose</small></div><div><span>COMPLETED MISSIONS</span><strong id="stat-missions">0</strong><small>Every handoff, visible</small></div></div>
+    <div class="section-heading"><h2>Your Bulters <span id="bulter-total">0</span></h2><div class="segmented"><button class="selected" data-filter="all">All</button><button data-filter="local">Local</button><button data-filter="cloud">Cloud</button></div></div>
+    <div id="bulter-grid" class="card-grid"></div>
+    <div class="collab-banner"><div class="orbit">↗</div><div><h3>Better, together.</h3><p>Give your team a mission. Choose who starts, who reviews, and who brings it all together.</p></div><button class="secondary" id="team-mission">Build a mission ↗</button></div>
+    <div class="bottom-note">Your Bulters can think and write. App control, web browsing, and unattended work are not enabled.</div>
+  </section>
+  <section id="view-missions" class="view" hidden>
+    <div class="compact-heading"><div><p class="eyebrow">FROM BRIEF TO HANDOFF</p><h1>Missions</h1><p class="subtitle">One task. A clear sequence. A record of every contribution.</p></div></div>
+    <div class="mission-layout"><div class="panel mission-composer"><h2>Give your Bulters a brief</h2><form id="mission-form"><label for="mission-prompt">What would you like to accomplish?</label><textarea id="mission-prompt" rows="6" maxlength="6000" required placeholder="Draft a PKI rollout outline, then have a second Bulter review its assumptions…"></textarea><label>Choose up to four Bulters, in handoff order</label><p class="help">Click in the order you want them to work. Each receives earlier outputs, plus its own permitted notes. Private chat history is not shared.</p><div id="team-picker"></div><div id="team-route" class="route">No Bulters selected</div><label id="cloud-consent-row" class="check" hidden><input type="checkbox" id="cloud-consent"><span>I approve sending this brief, cloud-approved notes and all preceding Bulter outputs to the selected paid providers. Usage may incur charges.</span></label><p id="egress-note" class="help"></p><button type="submit" class="primary full" id="run-mission">Start mission ↗</button></form></div><div class="panel"><div class="section-heading"><h2>Mission activity</h2><span class="tiny">SAVED ON THIS MAC</span></div><div id="mission-list"></div></div></div>
+    <div id="mission-detail"></div>
+  </section>
+  <section id="view-memory" class="view" hidden>
+    <div class="compact-heading"><div><p class="eyebrow">CONTEXT WITH BOUNDARIES</p><h1>Memory</h1><p class="subtitle">Tell your Bulters what matters. Decide who gets to know.</p></div><button class="primary" id="new-memory">＋ Add memory</button></div>
+    <div class="info-strip"><strong>Memory is deliberate.</strong> Notes are saved only when you add them. Shared notes go to Bulters with shared memory enabled. Local-only notes never enter a mission with a cloud step.</div><div id="memory-list" class="card-grid"></div>
+  </section>
+  <section id="view-models" class="view" hidden>
+    <div class="compact-heading"><div><p class="eyebrow">A MODEL FOR EVERY ROLE</p><h1>Models & connections</h1><p class="subtitle">Run on your Mac, or connect a paid provider when you choose.</p></div><button class="secondary" id="refresh-models">↻ Check connections</button></div>
+    <div id="provider-grid" class="card-grid"></div><div class="info-strip"><strong>Cloud connections use provider APIs.</strong> Enter an exact model ID when creating a Bulter. API keys stay in the server process; this dashboard never asks you to paste a key. See the setup guide for configuration. Cloud adapters remain unverified until tested with your account.</div>
+  </section>
+</main>
+<dialog id="bulter-dialog"><form id="bulter-form"><div class="dialog-heading"><div><p class="eyebrow">A NEW KIND OF TEAMMATE</p><h2 id="bulter-dialog-title">Create a Bulter</h2></div><button type="button" class="icon-button" data-close="bulter-dialog" aria-label="Close">×</button></div><input type="hidden" id="bulter-id"><div class="form-row"><div><label for="bulter-name">Name</label><input id="bulter-name" required maxlength="60" placeholder="Atlas"></div><div><label for="bulter-role">Specialty</label><input id="bulter-role" required maxlength="140" placeholder="PKI architecture advisor"></div></div><label for="bulter-instructions">How should this Bulter work?</label><textarea id="bulter-instructions" rows="4" required maxlength="3000" placeholder="Define the role, tone, boundaries, and what a good answer looks like."></textarea><div class="form-row"><div><label for="bulter-provider">Provider</label><select id="bulter-provider"><option value="ollama">Ollama · local</option><option value="lmstudio">LM Studio · local</option><option value="anthropic">Claude · paid API</option><option value="openai">OpenAI · paid API</option><option value="openrouter">OpenRouter · paid API</option></select></div><div><label for="bulter-model">Model ID</label><input id="bulter-model" required maxlength="180" list="model-options" placeholder="Select or enter a model"><datalist id="model-options"></datalist></div></div><p class="help" id="provider-help"></p><label class="check"><input type="checkbox" id="bulter-shared"><span>Allow this Bulter to use shared workspace memory</span></label><p class="help">Private notes are only retrieved by their owner. Mission outputs are intentionally handed to the next selected Bulter.</p><div class="dialog-actions"><button type="button" class="secondary" data-close="bulter-dialog">Cancel</button><button class="primary" type="submit">Save Bulter</button></div><p class="form-error" role="alert"></p></form></dialog>
+<dialog id="memory-dialog"><form id="memory-form"><div class="dialog-heading"><h2 id="memory-dialog-title">Add a memory</h2><button type="button" class="icon-button" data-close="memory-dialog" aria-label="Close">×</button></div><input type="hidden" id="memory-id"><label for="memory-title">Title</label><input id="memory-title" required maxlength="100" placeholder="How I like architecture reviews"><label for="memory-content">Note</label><textarea id="memory-content" required maxlength="3000" rows="5" placeholder="Use explicit assumptions and distinguish verified facts from recommendations."></textarea><label for="memory-owner">Who can use this?</label><select id="memory-owner"></select><label class="check"><input type="checkbox" id="memory-cloud"><span>Allow this note in missions that use cloud providers</span></label><label class="check"><input type="checkbox" id="memory-active" checked><span>Active for future missions</span></label><p class="help">Deactivation affects future missions. Existing outputs may still contain information from this note.</p><div class="dialog-actions"><button type="button" class="secondary" data-close="memory-dialog">Cancel</button><button type="submit" class="primary">Save memory</button></div><p class="form-error" role="alert"></p></form></dialog>
+</body></html>

@@ -1,0 +1,26 @@
+# Local state and credentials are never source deliverables.
+.env
+.env.*
+*.env
+.runtime/
+.release/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+*.sqlite*
+*.db
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+node_modules/
+dist/
+build/
+# Generated source-archive integrity manifest, not an authored source file.
+SOURCE_MANIFEST.json
