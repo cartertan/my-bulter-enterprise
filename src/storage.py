@@ -51,3 +51,9 @@ class Store:
             db.execute("INSERT INTO records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body",
                        (kind, record["id"], json.dumps(record)))
         return record
+
+    def put_many(self, kind: str, records: list[dict]) -> None:
+        """Apply a validated memory snapshot within one transaction."""
+        with self.connect() as db:
+            db.executemany("INSERT INTO records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body",
+                           [(kind, r["id"], json.dumps(r)) for r in records])

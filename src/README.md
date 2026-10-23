@@ -49,7 +49,7 @@ Two starter Bulters, Atlas and Scribe, and a clearly labelled demo memory were c
 
 ### Optional isolated setup
 
-For a dedicated environment, these commands create files only under `src/` and install the four pinned dependencies. Review before running; this setup is optional on the current Mac.
+For a dedicated environment, these commands create files only under `src/` and install the pinned dependencies, including PyYAML for Obsidian notes. Review before running; this setup is optional on the current Mac.
 
 ```zsh
 python3 -m venv src/.venv
@@ -59,6 +59,8 @@ zsh scripts/run.sh
 ```
 
 ### Memory rules
+
+For centralized note management, use the [Obsidian integration](docs/OBSIDIAN.md). Approved vault notes are read-only in this dashboard and are refreshed before missions; raw exports and draft notes are excluded.
 
 | Note policy | Effect |
 | --- | --- |

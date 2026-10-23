@@ -42,7 +42,11 @@ async function api(path, method = 'GET', body) {
 }
 function showView(name) {
   document.querySelectorAll('.view').forEach(v => {v.hidden = v.id !== `view-${name}`;});
-  document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === name));
+  document.querySelectorAll('.nav').forEach(n => {
+    n.classList.toggle('active', n.dataset.view === name);
+    if (n.dataset.view === name) n.setAttribute('aria-current', 'page');
+    else n.removeAttribute('aria-current');
+  });
   $('#breadcrumb').textContent = {bulters: 'Bulters', missions: 'Missions', memory: 'Memory', models: 'Models & connections'}[name];
   if (name === 'missions') renderTeam();
 }
@@ -152,7 +156,7 @@ function renderDetail() {
     const block = el('div', 'step');
     const title = el('div', 'step-head');
     title.append(el('strong', '', `${index + 1}. ${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', 'badge', step.status));
-    block.append(title, el('p', 'help', `${step.memory_ids.length} permitted notes used · output handed to subsequent Bulters`), el('pre', 'step-output', step.output || 'Waiting for the model’s first words…'));
+    block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes · output handed to subsequent Bulters`), el('pre', 'step-output', step.output || 'Waiting for the model’s first words…'));
     panel.append(block);
   }
   target.append(panel);
@@ -170,9 +174,12 @@ function openMemory(memory = null) {
   $('#memory-dialog').showModal();
 }
 function renderMemory() {
+  $('#vault-path').textContent = state.obsidian?.exists ? state.obsidian.path : 'Vault not created yet. See the Obsidian setup guide.';
   $('#memory-list').replaceChildren(...state.memories.map(memory => {
     const card = el('article', 'card');
-    card.append(el('span', `badge ${memory.cloud_allowed ? 'cloud' : ''}`, memory.active ? (memory.cloud_allowed ? 'Cloud-approved' : 'Local only') : 'Inactive'), el('p', 'help', memory.owner_id ? `Private · ${state.bulters.find(b => b.id === memory.owner_id)?.name || 'Unknown'}` : 'Shared workspace'), el('h3', '', memory.title), el('p', 'memory-content', memory.content), button('Edit memory', 'secondary', () => openMemory(memory)));
+    card.append(el('span', `badge ${memory.cloud_allowed ? 'cloud' : ''}`, memory.active ? (memory.cloud_allowed ? 'Cloud-approved' : 'Local only') : 'Inactive'), el('p', 'help', memory.owner_id ? `Private · ${state.bulters.find(b => b.id === memory.owner_id)?.name || 'Unknown'}` : 'Shared workspace'), el('h3', '', memory.title), el('p', 'memory-content', memory.content));
+    if (memory.source_type === 'obsidian') card.append(el('p', 'help', `Edit in Obsidian: ${memory.source_path} · Source: ${memory.source}`));
+    else card.append(button('Edit memory', 'secondary', () => openMemory(memory)));
     return card;
   }));
   if (!state.memories.length) $('#memory-list').append(el('p', 'empty', 'No memories yet. Add preferences, useful context, or working principles for your team.'));
@@ -203,9 +210,15 @@ async function connections() {
 }
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => document.getElementById(b.dataset.close).close()));
-document.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { filter = b.dataset.filter; document.querySelectorAll('[data-filter]').forEach(n => n.classList.toggle('selected', n === b)); renderBulters(); }));
+document.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { filter = b.dataset.filter; document.querySelectorAll('[data-filter]').forEach(n => {n.classList.toggle('selected', n === b); n.setAttribute('aria-pressed', String(n === b));}); renderBulters(); }));
 $('#new-bulter').addEventListener('click', () => openBulter());
 $('#new-memory').addEventListener('click', () => openMemory());
+$('#sync-obsidian').addEventListener('click', async () => {
+  $('#sync-obsidian').disabled = true;
+  try { const result = await api('obsidian/sync', 'POST'); await refresh(); notify(`${result.approved} approved notes synced; ${result.deactivated} deactivated.`); }
+  catch (error) { notify(error.message); }
+  finally { $('#sync-obsidian').disabled = false; }
+});
 $('#team-mission').addEventListener('click', () => showView('missions'));
 $('#refresh-models').addEventListener('click', connections);
 $('#bulter-provider').addEventListener('change', () => { $('#bulter-model').value = ''; providerModels(); });

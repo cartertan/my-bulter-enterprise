@@ -53,6 +53,7 @@ python3 -m pip install -r src/requirements.txt
 | Uvicorn | 0.49.0 | ASGI application server |
 | HTTPX | 0.28.1 | Async provider connections and tests |
 | pytest | 9.0.3 | Automated verification |
+| PyYAML | 6.0.3 | Safely parse approved Obsidian note properties |
 
 SQLite is included with Python. Pydantic and Starlette arrive through FastAPI. These are pinned direct dependencies, not a hash-locked complete dependency graph. The initial build reused installed packages; a fresh internet-based dependency installation has not been separately certified.
 

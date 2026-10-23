@@ -8,7 +8,7 @@
 </head>
 <body>
 <aside class="sidebar">
-  <a class="brand" href="/" aria-label="My Bulter Enterprise home"><span class="brand-mark">b<span>·</span></span><span>my bulter<small>ENTERPRISE</small></span></a>
+  <a class="brand" href="/" aria-label="My Bulter Enterprise home"><span class="butler-seal" aria-hidden="true"><span class="bow-tie"></span></span><span>my bulter<small>ENTERPRISE</small></span></a>
   <div class="workspace"><span class="workspace-avatar">MB</span><div>My workspace<small>Personal · on this Mac</small></div><span class="workspace-dot"></span></div>
   <div class="nav-label">WORKSPACE</div>
   <nav aria-label="Main navigation">
@@ -23,11 +23,11 @@
   <header class="topbar"><span>Workspace <span class="slash">/</span> <span id="breadcrumb">Bulters</span></span><span class="phase-pill">PHASE 01 <span>·</span> LOCAL PREVIEW</span></header>
   <div id="notice" role="status" aria-live="polite" hidden></div>
   <section id="view-bulters" class="view">
-    <div class="page-heading"><div><p class="eyebrow">YOUR AI TEAM, YOUR WAY</p><h1>A little help.<br>A lot of possibility.</h1><p class="subtitle">Specialist Bulters. Models of your choice. Working together.</p></div><button class="primary" id="new-bulter">＋ Create Bulter</button></div>
+    <div class="page-heading"><div><p class="eyebrow">YOUR PRIVATE AI SERVICE</p><h1>Consider it<br><em>taken care of.</em></h1><p class="subtitle">A thoughtful team. A personal touch.<br>Your Bulters, ready when you are.</p><button class="primary" id="new-bulter">＋ Create Bulter</button></div><div class="service-portrait" aria-hidden="true"><svg viewBox="0 0 260 260" fill="none"><circle cx="130" cy="125" r="105" stroke="currentColor" stroke-opacity=".2"/><circle cx="130" cy="125" r="93" stroke="currentColor" stroke-opacity=".1"/><path d="M76 224V169Q77 151 103 142L130 155L157 142Q183 151 184 169V224" fill="#151412" stroke="currentColor" stroke-opacity=".5"/><path d="M105 143L130 155L155 143L140 216H120Z" fill="#e7dcc7"/><path d="M104 143L89 166L111 175L104 187L128 225M156 143L171 166L149 175L156 187L132 225" stroke="currentColor" stroke-opacity=".7"/><path d="M112 155L129 163L112 171ZM148 155L131 163L148 171Z" fill="#25211c"/><circle cx="130" cy="163" r="4" fill="#25211c"/><circle cx="130" cy="183" r="2" fill="#25211c"/><circle cx="130" cy="196" r="2" fill="#25211c"/><path d="M104 98Q104 72 130 72Q156 72 156 98V114Q154 140 130 143Q106 140 104 114Z" fill="#bfa782"/><path d="M102 101Q94 68 120 62Q151 54 160 83L156 106L147 88Q126 99 108 86L105 106" fill="#1b1916" stroke="currentColor" stroke-opacity=".4"/><path d="M122 124Q130 129 138 124" stroke="#6a533d" stroke-linecap="round"/><path d="M65 224H195" stroke="currentColor" stroke-opacity=".5"/></svg><span>DISCREET. CAPABLE. AT YOUR SERVICE.</span></div></div>
     <div class="stats"><div><span>YOUR BULTERS</span><strong id="stat-bulters">0</strong><small>Purpose-built teammates</small></div><div><span>LOCAL MODELS</span><strong id="stat-models">—</strong><small id="model-note">Checking your connections</small></div><div><span>SHARED MEMORIES</span><strong id="stat-memory">0</strong><small>Only shared when you choose</small></div><div><span>COMPLETED MISSIONS</span><strong id="stat-missions">0</strong><small>Every handoff, visible</small></div></div>
-    <div class="section-heading"><h2>Your Bulters <span id="bulter-total">0</span></h2><div class="segmented"><button class="selected" data-filter="all">All</button><button data-filter="local">Local</button><button data-filter="cloud">Cloud</button></div></div>
+    <div class="section-heading"><h2>Your service team <span id="bulter-total">0</span></h2><div class="segmented" aria-label="Filter Bulters"><button class="selected" data-filter="all" aria-pressed="true">All</button><button data-filter="local" aria-pressed="false">Local</button><button data-filter="cloud" aria-pressed="false">Cloud</button></div></div>
     <div id="bulter-grid" class="card-grid"></div>
-    <div class="collab-banner"><div class="orbit">↗</div><div><h3>Better, together.</h3><p>Give your team a mission. Choose who starts, who reviews, and who brings it all together.</p></div><button class="secondary" id="team-mission">Build a mission ↗</button></div>
+    <div class="collab-banner"><div class="orbit" aria-hidden="true">↗</div><div><h3>Leave the details to your team.</h3><p>One brief, thoughtfully handed from specialist to specialist.</p></div><button class="secondary" id="team-mission">Build a mission ↗</button></div>
     <div class="bottom-note">Your Bulters can think and write. App control, web browsing, and unattended work are not enabled.</div>
   </section>
   <section id="view-missions" class="view" hidden>
@@ -37,7 +37,8 @@
   </section>
   <section id="view-memory" class="view" hidden>
     <div class="compact-heading"><div><p class="eyebrow">CONTEXT WITH BOUNDARIES</p><h1>Memory</h1><p class="subtitle">Tell your Bulters what matters. Decide who gets to know.</p></div><button class="primary" id="new-memory">＋ Add memory</button></div>
-    <div class="info-strip"><strong>Memory is deliberate.</strong> Notes are saved only when you add them. Shared notes go to Bulters with shared memory enabled. Local-only notes never enter a mission with a cloud step.</div><div id="memory-list" class="card-grid"></div>
+    <div class="info-strip"><strong>My Bulter Memory · Obsidian</strong><p id="vault-path"></p><p>Manage your notes in Obsidian. Only approved notes enter Bulter memory; raw exports and drafts stay out. Changes are checked again before every mission.</p><button class="secondary" id="sync-obsidian">Sync approved notes</button></div>
+    <div class="info-strip"><strong>Memory is deliberate.</strong> Shared notes go to Bulters with shared memory enabled. Local-only notes never enter a mission with a cloud step. Imported notes are edited in Obsidian.</div><div id="memory-list" class="card-grid"></div>
   </section>
   <section id="view-models" class="view" hidden>
     <div class="compact-heading"><div><p class="eyebrow">A MODEL FOR EVERY ROLE</p><h1>Models & connections</h1><p class="subtitle">Run on your Mac, or connect a paid provider when you choose.</p></div><button class="secondary" id="refresh-models">↻ Check connections</button></div>

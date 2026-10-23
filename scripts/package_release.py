@@ -27,6 +27,9 @@ FILES = (
     "src/static/app.js", "src/tests/test_app.py", "src/tests/test_package.py",
     "src/docs/SETUP.md", "src/docs/ARCHITECTURE.md", "src/docs/BUILD_ACTIVITY.md",
     "src/docs/SECURITY.md", "src/docs/PUBLISHING.md",
+    "src/obsidian.py", "scripts/init_vault.py", "src/tests/test_obsidian.py", "src/tests/test_retrieval.py",
+    "src/docs/OBSIDIAN.md", "src/docs/MEMORY_EXPORT_PROMPT.md", "src/docs/MEMORY_NOTE_TEMPLATE.md",
+    "src/tests/test_scenarios.py", "src/docs/CHECKPOINT_2026-10-23.md",
 )
 PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),

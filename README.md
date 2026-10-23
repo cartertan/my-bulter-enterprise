@@ -69,6 +69,8 @@ See [architecture and design decisions](src/docs/ARCHITECTURE.md), including dat
 | [Security](src/docs/SECURITY.md) | Implemented protections, limitations and handling sensitive data |
 | [Publishing](src/docs/PUBLISHING.md) | Review, commit, GitHub creation/push, ZIP packaging and future updates |
 | [Operator guide](src/README.md) | Detailed application behaviour and memory/provider rules |
+| [Obsidian memory](src/docs/OBSIDIAN.md) | Private vault setup, approved-note import and ChatGPT/Claude inventory workflow |
+| [Memory export prompt](src/docs/MEMORY_EXPORT_PROMPT.md) | Reusable prompt to run separately in ChatGPT and Claude |
 
 ### Source layout
 
@@ -101,6 +103,8 @@ python3 scripts/package_release.py --check
 Node.js is optional for running the app; it is used only for the JavaScript syntax check. Automated provider tests use synthetic credentials and mocked responses, not paid services. See the build activity record for the distinction between automated tests and the original manual/live demonstration.
 
 ### Roadmap
+
+The Obsidian follow-up adds read-only import of approved Markdown notes and source hashes. Raw exports, automatic extraction, semantic search and two-way sync are not implemented. The default vault remains Git-ignored under `src/.runtime/My Bulter Memory`.
 
 - Live account-specific cloud validation and usage/cost visibility.
 - Continuing conversations and mission follow-up.
