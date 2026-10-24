@@ -36,7 +36,7 @@ def test_allowlist_excludes_runtime_and_verifies_manifest(tmp_path: Path) -> Non
     for name in FILES:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("Synthetic source\n")
+        path.write_bytes(b"\xff\xd8\xffsynthetic fixture" if name.endswith('.jpg') else b"Synthetic source\n")
     private = tmp_path / "src" / ".runtime"
     private.mkdir()
     (private / "private.txt").write_text("not for publication")
@@ -58,4 +58,14 @@ def test_symlink_rejected(tmp_path: Path) -> None:
     destination.write_text("synthetic")
     (tmp_path / FILES[0]).symlink_to(destination)
     with pytest.raises(ValueError, match="Symlink"):
+        collect(tmp_path)
+
+
+def test_invalid_screenshot_rejected(tmp_path: Path) -> None:
+    """An allowlisted image must have a JPEG signature, not arbitrary text."""
+    for name in FILES:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"Synthetic source\n")
+    with pytest.raises(ValueError, match="Invalid or oversized screenshot"):
         collect(tmp_path)

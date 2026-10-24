@@ -30,6 +30,8 @@ FILES = (
     "src/obsidian.py", "scripts/init_vault.py", "src/tests/test_obsidian.py", "src/tests/test_retrieval.py",
     "src/docs/OBSIDIAN.md", "src/docs/MEMORY_EXPORT_PROMPT.md", "src/docs/MEMORY_NOTE_TEMPLATE.md",
     "src/tests/test_scenarios.py", "src/docs/CHECKPOINT_2026-10-23.md",
+    "src/docs/GALLERY.md", "src/docs/screenshots/dashboard.jpg", "src/docs/screenshots/missions.jpg",
+    "src/docs/screenshots/memory.jpg", "src/docs/screenshots/models.jpg",
 )
 PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -70,7 +72,12 @@ def collect(root: Path) -> dict[str, bytes]:
                 raise ValueError(f"Symlink not allowed: {name}")
             current = current.parent
         data = path.read_bytes()
-        validate_text(name, data)
+        if name.endswith(".jpg"):
+            # Only explicitly allowlisted, reviewed demo screenshots are packaged.
+            if not data.startswith(b"\xff\xd8\xff") or len(data) > 10_000_000:
+                raise ValueError(f"Invalid or oversized screenshot: {name}")
+        else:
+            validate_text(name, data)
         payload[name] = data
     if (root / ".git").exists():
         result = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
