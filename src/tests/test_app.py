@@ -92,7 +92,7 @@ def test_ordered_handoff_and_snapshot(client: TestClient) -> None:
     second = add_bot(client, "Scribe")
     calls = []
 
-    async def fake_generate(provider: str, model: str, system: str, messages: list):
+    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None):
         """Capture incoming context and emit synthetic text."""
         calls.append(messages[0]["content"])
         yield "First result" if len(calls) == 1 else "Reviewed result"
@@ -115,7 +115,7 @@ def test_no_cross_cloud_memory_transit(client: TestClient, monkeypatch) -> None:
     client.post("/api/memories", json={"title": "Private policy", "content": "DO_NOT_TRANSMIT", "cloud_allowed": False})
     calls = []
 
-    async def fake_generate(provider: str, model: str, system: str, messages: list):
+    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None):
         """Observe every step without making a network request."""
         calls.append(messages[0]["content"])
         yield "Safe synthetic output"
@@ -131,7 +131,7 @@ def test_cancellation_and_busy_guard(client: TestClient) -> None:
     """A stopped mission keeps partial output and prevents subsequent steps."""
     bot = add_bot(client)
 
-    async def slow_generate(provider: str, model: str, system: str, messages: list):
+    async def slow_generate(provider: str, model: str, system: str, messages: list, options=None):
         """Leave the upstream request active until cancellation."""
         yield "Partial"
         await asyncio.sleep(20)
@@ -152,7 +152,7 @@ def test_failure_stops_chain(client: TestClient) -> None:
     """Provider errors never become successful handoffs or hidden retries."""
     first, second = add_bot(client), add_bot(client, "Reviewer")
 
-    async def failing_generate(provider: str, model: str, system: str, messages: list):
+    async def failing_generate(provider: str, model: str, system: str, messages: list, options=None):
         """Emit partial output before a synthetic network failure."""
         yield "Incomplete"
         raise ProviderError("Synthetic connection failure")

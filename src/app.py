@@ -14,6 +14,10 @@ import os
 import re
 import math
 import secrets
+import hashlib
+import subprocess
+import sys
+import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +25,14 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.providers import PROVIDERS, ProviderError, discover, generate, is_cloud
 from src.storage import Store
-from src.obsidian import DEFAULT_VAULT, sync_notes
+from src.obsidian import DEFAULT_VAULT, FOLDERS, sync_notes, read_notes
+from src.documents import MAX_UPLOAD, chunks, export_mission
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +52,9 @@ class BulterInput(StrictInput):
     provider: Provider = "ollama"
     model: str = Field(min_length=1, max_length=180)
     shared_memory: bool = False
+    output_tokens: int = Field(default=2048, ge=512, le=8192)
+    context_tokens: int = Field(default=16384, ge=8192, le=32768)
+    thinking: Literal["auto", "on", "off"] = "auto"
 
     @model_validator(mode="after")
     def local_model_only(self):
@@ -184,7 +192,7 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
             body = bytearray()
             async for chunk in request.stream():
                 body.extend(chunk)
-                if len(body) > 40000:
+                if len(body) > (MAX_UPLOAD if request.url.path == "/api/documents" else 40000):
                     return JSONResponse({"detail": "Request is too large."}, status_code=413)
             request._body = bytes(body)
         response = await call_next(request)
@@ -203,11 +211,107 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
         """Public, nonsensitive readiness probe."""
         return {"status": "ok"}
 
+    @app.get("/api/documents")
+    async def documents() -> list[dict]:
+        """List persisted extraction previews, including unapproved uploads."""
+        return store.all("document")
+
+    @app.post("/api/documents")
+    async def upload_document(request: Request) -> dict:
+        """Extract locally in a bounded subprocess; no model call or automatic approval."""
+        filename = request.query_params.get("filename", "")
+        if not filename or len(filename) > 150 or any(c in filename for c in '/\\\x00\r\n'):
+            raise HTTPException(400, "Use a filename without directory paths, up to 150 characters.")
+        data = await request.body()
+        digest = hashlib.sha256(data).hexdigest()
+        identifier = "upload-" + digest[:32]
+        existing = store.get("document", identifier)
+        if existing:
+            return existing
+        try:
+            result = await asyncio.to_thread(subprocess.run, [sys.executable, "-m", "src.documents", filename],
+                input=data, capture_output=True, timeout=30, cwd=ROOT.parent, check=True)
+            extracted = json.loads(result.stdout)
+            if "error" in extracted:
+                raise ValueError(extracted["error"])
+        except (subprocess.SubprocessError, ValueError, OSError) as exc:
+            message = str(exc) if isinstance(exc, ValueError) else "Extraction failed or exceeded 30 seconds. Try a smaller document."
+            raise HTTPException(400, message) from exc
+        document = {"id": identifier, "filename": filename, "sha256": digest, "status": "draft",
+                    "chunks": chunks(extracted["text"]), "created": now()}
+        store.put("document", document)
+        return document
+
+    @app.post("/api/documents/{identifier}/approve")
+    async def approve_document(identifier: str) -> dict:
+        """Write reviewed text to Obsidian as shared, local-only notes."""
+        if tasks:
+            raise HTTPException(409, "Wait for the current mission before importing memory.")
+        document = store.get("document", identifier)
+        if not document:
+            raise HTTPException(404, "Upload not found.")
+        if document["status"] == "approved":
+            return document
+        try:
+            if vault.is_symlink() or any(p.is_symlink() for p in vault.parents):
+                raise ValueError("Vault symlinks are not supported.")
+            vault.mkdir(parents=True, exist_ok=True, mode=0o700)
+            read_notes(vault, {b["id"] for b in store.all("bulter")})
+            if sum(len(list((vault / folder).rglob("*.md"))) for folder in FOLDERS) + len(document["chunks"]) > 500:
+                raise ValueError("Vault file limit reached. Review the vault before importing more notes.")
+            parent = vault / "50 Shared Knowledge"
+            if parent.is_symlink():
+                raise ValueError("Memory folder cannot be a symlink.")
+            parent.mkdir(exist_ok=True, mode=0o700)
+            destination = parent / identifier
+            if destination.is_symlink():
+                raise ValueError("Upload folder cannot be a symlink.")
+            # Stage all notes outside managed folders, then expose them in one rename.
+            staging = vault / (".staging-" + str(uuid4()))
+            staging.mkdir(mode=0o700)
+            for i, part in enumerate(document["chunks"]):
+                properties = {"id": f"{identifier}-{i + 1}", "title": f"{document['filename'][:75]} — {i + 1}",
+                              "status": "approved", "scope": "shared", "cloud_allowed": False,
+                              "source": document["filename"], "source_sha256": document["sha256"]}
+                content = "---\n" + yaml.safe_dump(properties, allow_unicode=True) + "---\n\n" + part + "\n"
+                path = (destination if destination.exists() else staging) / f"{i + 1:03d}.md"
+                if path.exists() or path.is_symlink():
+                    if path.is_symlink() or path.read_text() != content:
+                        raise ValueError("An imported note was changed. Review it in Obsidian before retrying.")
+                else:
+                    with path.open("x", encoding="utf-8") as handle:
+                        handle.write(content)
+                    path.chmod(0o600)
+            if not destination.exists():
+                staging.rename(destination)
+            sync_notes(store, vault)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        document["status"] = "approved"
+        store.put("document", document)
+        return document
+
+    @app.get("/api/missions/{identifier}/export/{format_name}")
+    async def export_document(identifier: str, format_name: str) -> Response:
+        """Return a local editable artifact without sending data to a provider."""
+        mission = store.get("mission", identifier)
+        if not mission:
+            raise HTTPException(404, "Mission not found.")
+        try:
+            data = await asyncio.to_thread(export_mission, mission, format_name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        mime = "application/vnd.openxmlformats-officedocument." + ("wordprocessingml.document" if format_name == "docx" else "presentationml.presentation")
+        return Response(data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="bulter-response.{format_name}"'})
+
     @app.get("/api/state")
     async def state() -> dict:
         """Return local dashboard data; provider discovery is a separate operation."""
         missions = store.all("mission")
-        return {"bulters": store.all("bulter"), "memories": store.all("memory"), "missions": missions[::-1],
+        bulters = store.all("bulter")
+        return {"bulters": [b for b in bulters if not b.get("removed_at")],
+                "removed_bulters": [b for b in bulters if b.get("removed_at")],
+                "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
 
     @app.post("/api/obsidian/sync")
@@ -236,7 +340,32 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
         existing = store.get("bulter", identifier)
         if not existing:
             raise HTTPException(404, "Bulter not found.")
+        if existing.get("removed_at"):
+            raise HTTPException(409, "Restore this Bulter before editing it.")
         return store.put("bulter", {**existing, **data.model_dump()})
+
+    @app.delete("/api/bulters/{identifier}")
+    async def remove_bulter(identifier: str) -> dict:
+        """Remove from the active team, preserving history and private ownership."""
+        existing = store.get("bulter", identifier)
+        if not existing:
+            raise HTTPException(404, "Bulter not found.")
+        if any(m["status"] in ("queued", "running") and
+               any(b["id"] == identifier for b in m["team"]) for m in store.all("mission")):
+            raise HTTPException(409, "Stop or finish this Bulter's active mission before removing it.")
+        if not existing.get("removed_at"):
+            existing["removed_at"] = now()
+            store.put("bulter", existing)
+        return existing
+
+    @app.post("/api/bulters/{identifier}/restore")
+    async def restore_bulter(identifier: str) -> dict:
+        """Restore the same identity and its private memory access."""
+        existing = store.get("bulter", identifier)
+        if not existing:
+            raise HTTPException(404, "Bulter not found.")
+        existing.pop("removed_at", None)
+        return store.put("bulter", existing)
 
     @app.post("/api/memories")
     async def add_memory(data: MemoryInput) -> dict:
@@ -273,7 +402,7 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
                     mission["steps"].append(step)
                     store.put("mission", mission)
                     system, messages = build_context(bot, notes, mission["prompt"], handoffs)
-                    async for chunk in generate(bot["provider"], bot["model"], system, messages):
+                    async for chunk in generate(bot["provider"], bot["model"], system, messages, options=bot):
                         step["output"] += chunk
                         if len(step["output"]) > 16000:
                             raise ProviderError("The response exceeded the text limit. Partial output has been kept.")
@@ -306,7 +435,7 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
         if tasks:
             raise HTTPException(409, "A mission is already running. Stop it or wait for completion.")
         bots = [store.get("bulter", identifier) for identifier in data.bulter_ids]
-        if any(b is None for b in bots):
+        if any(b is None or b.get("removed_at") for b in bots):
             raise HTTPException(404, "A selected Bulter no longer exists.")
         cloud = any(is_cloud(b["provider"]) for b in bots)
         if cloud and not data.cloud_consent:

@@ -55,8 +55,9 @@ async def discover(provider: str) -> dict:
     return result
 
 
-def request_spec(provider: str, model: str, system: str, messages: list[dict]) -> tuple:
+def request_spec(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None) -> tuple:
     """Build a provider-specific request using a fixed endpoint allowlist."""
+    options = options or {}
     spec = PROVIDERS[provider]
     headers = {"Content-Type": "application/json"}
     key = os.environ.get(spec["key"], "") if spec["key"] else None
@@ -74,13 +75,15 @@ def request_spec(provider: str, model: str, system: str, messages: list[dict]) -
     elif provider == "ollama":
         path = "/api/chat"
         body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
-                "stream": True, "options": {"num_predict": 2048, "num_ctx": 8192}}
+                "stream": True, "options": {"num_predict": options.get("output_tokens", 2048), "num_ctx": options.get("context_tokens", 16384)}}
     else:
         path = "/api/v1/chat/completions" if provider == "openrouter" else "/v1/chat/completions"
         if key:
             headers["Authorization"] = f"Bearer {key}"
         body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
                 "max_tokens": 2048, "stream": True}
+    if provider == "ollama" and options.get("thinking", "auto") != "auto":
+        body["think"] = options["thinking"] == "on"
     return spec["base"] + path, headers, body
 
 
@@ -109,9 +112,9 @@ def parse_event(provider: str, event: dict) -> tuple[str, bool]:
     return choices[0].get("delta", {}).get("content") or "", choices[0].get("finish_reason") == "stop"
 
 
-async def generate(provider: str, model: str, system: str, messages: list[dict]) -> AsyncIterator[str]:
+async def generate(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None) -> AsyncIterator[str]:
     """Stream bounded text with explicit timeout and no automatic billing retries."""
-    url, headers, body = request_spec(provider, model, system, messages)
+    url, headers, body = request_spec(provider, model, system, messages, options)
     completed = False
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:

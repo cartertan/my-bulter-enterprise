@@ -14,6 +14,82 @@ from src.tests.test_app import add_bot, wait_mission
 from src.tests.test_obsidian import note
 
 
+def test_edit_existing_bulter_model_and_preserve_history(tmp_path: Path) -> None:
+    """A model edit survives reopening and only affects subsequent missions."""
+    app = create_app(tmp_path / "db.sqlite3")
+    calls = []
+
+    async def fake(provider, model, system, messages, options=None):
+        """Record model routing without making a network request."""
+        calls.append(model)
+        yield "Synthetic answer"
+
+    with TestClient(app) as client, patch("src.app.generate", fake):
+        client.headers["x-bulter-token"] = app.state.csrf
+        bot = add_bot(client, "Atlas")
+        client.post("/api/missions", json={"prompt": "First run", "bulter_ids": [bot["id"]]})
+        old = wait_mission(client)
+        fields = {k: v for k, v in bot.items() if k not in ("id", "created")}
+        result = client.put(f"/api/bulters/{bot['id']}", json={**fields, "model": "qwen3.8:27b"})
+        assert result.status_code == 200
+        assert client.get("/api/state").json()["bulters"][0]["model"] == "qwen3.8:27b"
+        client.post("/api/missions", json={"prompt": "Second run", "bulter_ids": [bot["id"]]})
+        assert wait_mission(client)["team"][0]["model"] == "qwen3.8:27b"
+        assert calls == ["test-model", "qwen3.8:27b"]
+        assert app.state.store.get("mission", old["id"])["team"][0]["model"] == "test-model"
+    reopened = create_app(tmp_path / "db.sqlite3")
+    assert reopened.state.store.get("bulter", bot["id"])["model"] == "qwen3.8:27b"
+
+
+def test_remove_recreate_and_restore_private_identity(tmp_path: Path) -> None:
+    """Removing a bot preserves private ownership; a replacement gets a fresh ID."""
+    from src.app import eligible_memory
+    app = create_app(tmp_path / "db.sqlite3")
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        old = add_bot(client, "Atlas")
+        memory = client.post("/api/memories", json={"title": "Private", "content": "Test only", "owner_id": old["id"]}).json()
+        for _ in range(2):
+            assert client.delete(f"/api/bulters/{old['id']}").status_code == 200
+        state = client.get("/api/state").json()
+        assert not state["bulters"] and len(state["removed_bulters"]) == 1
+        assert state["memories"][0] == memory
+        assert client.post("/api/missions", json={"prompt": "Run", "bulter_ids": [old["id"]]}).status_code == 404
+        replacement = add_bot(client, "Atlas")
+        assert replacement["id"] != old["id"]
+        assert not eligible_memory([memory], replacement, False)
+        assert client.post(f"/api/bulters/{old['id']}/restore").status_code == 200
+        assert len(client.get("/api/state").json()["bulters"]) == 2
+        assert eligible_memory([memory], old, False) == [memory]
+
+
+def test_removal_requires_session_and_idle_bulter(tmp_path: Path) -> None:
+    """Reject cross-session removal and removal from an active mission."""
+    app = create_app(tmp_path / "db.sqlite3")
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        bot = add_bot(client)
+        app.state.store.put("mission", {"id": "busy", "status": "running", "team": [bot]})
+        assert client.delete(f"/api/bulters/{bot['id']}").status_code == 409
+        assert client.delete("/api/bulters/missing").status_code == 404
+        client.headers.pop("x-bulter-token")
+        assert client.delete(f"/api/bulters/{bot['id']}").status_code == 403
+
+
+def test_removed_obsidian_owner_does_not_break_sync(tmp_path: Path) -> None:
+    """Retained identities keep private Obsidian notes valid without reassigning them."""
+    app = create_app(tmp_path / "db.sqlite3")
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        bot = add_bot(client)
+        path = note(tmp_path / "vault")
+        path.write_text(path.read_text().replace("scope: shared", f"scope: private\nowner_id: {bot['id']}"))
+        assert client.post("/api/obsidian/sync").status_code == 200
+        assert client.delete(f"/api/bulters/{bot['id']}").status_code == 200
+        assert client.post("/api/obsidian/sync").status_code == 200
+        assert app.state.store.all("memory")[0]["owner_id"] == bot["id"]
+
+
 def test_large_vault_two_bulter_handoff(tmp_path: Path) -> None:
     """SC01: Retrieve from 140 notes and preserve selected IDs across a handoff."""
     vault = tmp_path / "vault"
@@ -23,7 +99,7 @@ def test_large_vault_two_bulter_handoff(tmp_path: Path) -> None:
     app = create_app(tmp_path / "db.sqlite3", vault)
     calls = []
 
-    async def fake(provider, model, system, messages):
+    async def fake(provider, model, system, messages, options=None):
         """Capture the complete request without any network call."""
         calls.append((system, messages))
         yield "Synthetic review: confirm the certificate requirements."
@@ -53,7 +129,7 @@ def test_revoke_between_missions(tmp_path: Path) -> None:
     app = create_app(tmp_path / "db.sqlite3", vault)
     calls = []
 
-    async def fake(provider, model, system, messages):
+    async def fake(provider, model, system, messages, options=None):
         """Capture references to check revocation."""
         calls.append(messages[0]["content"])
         yield "Synthetic answer"

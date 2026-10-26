@@ -50,11 +50,28 @@ function showView(name) {
   $('#breadcrumb').textContent = {bulters: 'Bulters', missions: 'Missions', memory: 'Memory', models: 'Models & connections'}[name];
   if (name === 'missions') renderTeam();
 }
-function providerModels() {
+function selectedModel() {
+  return $('#bulter-model').value === '__custom__' ? $('#bulter-custom-model').value.trim() : $('#bulter-model').value;
+}
+function modelEntryMode() {
+  const custom = $('#bulter-model').value === '__custom__';
+  $('#custom-model-row').hidden = !custom;
+  $('#bulter-custom-model').required = custom;
+  $('#bulter-custom-model').disabled = !custom;
+}
+function providerModels(model = selectedModel()) {
+  const keepCustomEntry = arguments.length === 0 && $('#bulter-model').value === '__custom__';
   const id = $('#bulter-provider').value;
   const provider = providers.find(p => p.id === id);
-  $('#model-options').replaceChildren(...(provider?.models || []).map(m => {const o = document.createElement('option'); o.value = m; return o;}));
-  $('#provider-help').textContent = cloud(id) ? 'Use the exact provider model ID. Saving this Bulter makes no paid request. An API key is required on the server to run it.' : `${provider?.status || 'Not checked'}. Choose an installed chat model, or enter its exact ID. No model downloads happen automatically.`;
+  const models = [...new Set(provider?.models || [])];
+  const choices = [{id: '', name: 'Choose a model'}, ...models.map(m => ({id: m, name: m}))];
+  // Keep saved IDs available even when discovery is offline or the provider has no catalog.
+  if (model && !models.includes(model)) choices.push({id: model, name: `${model} (saved or entered ID)`});
+  choices.push({id: '__custom__', name: 'Enter a custom model ID…'});
+  $('#bulter-model').replaceChildren(...choices.map(m => {const o = el('option', '', m.name); o.value = m.id; return o;}));
+  $('#bulter-model').value = keepCustomEntry ? '__custom__' : model || (cloud(id) ? '__custom__' : '');
+  modelEntryMode();
+  $('#provider-help').textContent = cloud(id) ? 'Select a saved model or enter the exact provider model ID. Saving makes no paid request.' : `${provider?.status || 'Checking connections'}. All discovered chat models are listed. Saving changes future missions; no model downloads happen automatically.`;
 }
 function openBulter(bot = null, starter = null) {
   $('#bulter-form').reset();
@@ -64,11 +81,15 @@ function openBulter(bot = null, starter = null) {
   $('#bulter-role').value = bot?.role || starter?.role || '';
   $('#bulter-instructions').value = bot?.instructions || starter?.instructions || 'Be helpful, precise and explicit about uncertainty. Ask when essential context is missing.';
   $('#bulter-provider').value = bot?.provider || 'ollama';
-  $('#bulter-model').value = bot?.model || '';
+  $('#bulter-custom-model').value = '';
+  $('#bulter-output').value = bot?.output_tokens || 4096;
+  $('#bulter-context').value = bot?.context_tokens || 16384;
+  $('#bulter-thinking').value = bot?.thinking || 'auto';
   $('#bulter-shared').checked = bot?.shared_memory || false;
   $('#bulter-dialog-title').textContent = bot ? 'Edit your Bulter' : 'Create a Bulter';
-  providerModels();
+  providerModels(bot?.model || '');
   $('#bulter-dialog').showModal();
+  connections();
 }
 function renderBulters() {
   $('#stat-bulters').textContent = state.bulters.length;
@@ -86,7 +107,7 @@ function renderBulters() {
     top.append(el('div', 'avatar', bot.name[0].toUpperCase()), el('span', `badge ${cloud(bot.provider) ? 'cloud' : provider?.status === 'Connected' ? '' : 'offline'}`, cloud(bot.provider) ? '↗ Cloud API' : '● Local model'));
     card.append(top, el('h3', '', bot.name), el('p', 'role', bot.role), el('span', 'model-chip', `${labels[bot.provider]} / ${bot.model}`), el('div', 'memory-line', bot.shared_memory ? '▤ Shared memory enabled' : '▤ Private memory only'));
     const actions = el('div', 'card-actions');
-    actions.append(button('Start a mission ↗', 'secondary', () => {team = [bot.id]; showView('missions'); $('#mission-prompt').focus();}), button('Edit', 'secondary', () => openBulter(bot)));
+    actions.append(button('Start a mission ↗', 'secondary', () => {team = [bot.id]; showView('missions'); $('#mission-prompt').focus();}), button('Edit', 'secondary', () => openBulter(bot)), button('Remove', 'secondary', () => openRemoveBulter(bot)));
     card.append(actions); grid.append(card);
   }
   if (!state.bulters.length) {
@@ -102,6 +123,24 @@ function renderBulters() {
   const add = el('article', 'card starter');
   add.append(el('span', 'plus', '＋'), el('h3', '', 'Make room for a specialist'), el('p', '', 'Give a Bulter a purpose, a model, and a way of working.'), button('Create a Bulter', 'secondary', () => openBulter()));
   grid.append(add);
+  const removed = state.removed_bulters || [];
+  if (removed.length) {
+    const panel = el('details', 'panel'); panel.append(el('summary', '', `Removed Bulters (${removed.length})`));
+    for (const bot of removed) {
+      const row = el('div', 'card-actions'); row.append(el('span', '', bot.name), button('Restore', 'secondary', async () => {
+        try { await api(`bulters/${bot.id}/restore`, 'POST'); await refresh(); notify(`${bot.name} restored.`); }
+        catch (error) { notify(error.message); }
+      })); panel.append(row);
+    }
+    grid.append(panel);
+  }
+}
+function openRemoveBulter(bot) {
+  $('#remove-bulter-id').value = bot.id;
+  $('#remove-bulter-title').textContent = `Remove ${bot.name}?`;
+  $('#remove-bulter-message').textContent = `Remove ${bot.name} from your active service team?`;
+  $('#remove-bulter-form .form-error').textContent = '';
+  $('#remove-bulter-dialog').showModal();
 }
 function renderTeam() {
   team = team.filter(id => state.bulters.some(b => b.id === id));
@@ -150,6 +189,17 @@ function renderDetail() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(mission, null, 2)], {type: 'application/json'}));
     const a = document.createElement('a'); a.href = url; a.download = `bulter-mission-${mission.id}.json`; a.click(); URL.revokeObjectURL(url);
   }));
+  if (mission.status === 'completed') for (const [format, label] of [['docx', 'Download Word'], ['pptx', 'Download PowerPoint']]) {
+    head.append(button(label, 'secondary', async () => {
+      try {
+        const response = await fetch(`/api/missions/${mission.id}/export/${format}`, {headers: {'X-Bulter-Token': token}});
+        if (!response.ok) throw new Error((await response.json()).detail);
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement('a'); a.href = url; a.download = `bulter-response.${format}`; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { notify(error.message); }
+    }));
+  }
   panel.append(head, el('p', 'brief', mission.prompt));
   if (mission.error) panel.append(el('p', 'error', mission.error));
   for (const [index, step] of mission.steps.entries()) {
@@ -168,7 +218,9 @@ function openMemory(memory = null) {
   $('#memory-content').value = memory?.content || '';
   $('#memory-cloud').checked = memory?.cloud_allowed || false;
   $('#memory-active').checked = memory?.active ?? true;
-  $('#memory-owner').replaceChildren(...[{id: '', name: 'Shared workspace · opted-in Bulters'}, ...state.bulters].map(b => {const o = el('option', '', b.name); o.value = b.id; return o;}));
+  // Retain a removed owner when editing its note; never silently convert it to shared.
+  const removedOwner = (state.removed_bulters || []).filter(b => b.id === memory?.owner_id).map(b => ({...b, name: `${b.name} (removed)`}));
+  $('#memory-owner').replaceChildren(...[{id: '', name: 'Shared workspace · opted-in Bulters'}, ...state.bulters, ...removedOwner].map(b => {const o = el('option', '', b.name); o.value = b.id; return o;}));
   $('#memory-owner').value = memory?.owner_id || '';
   $('#memory-dialog-title').textContent = memory ? 'Edit a memory' : 'Add a memory';
   $('#memory-dialog').showModal();
@@ -177,7 +229,7 @@ function renderMemory() {
   $('#vault-path').textContent = state.obsidian?.exists ? state.obsidian.path : 'Vault not created yet. See the Obsidian setup guide.';
   $('#memory-list').replaceChildren(...state.memories.map(memory => {
     const card = el('article', 'card');
-    card.append(el('span', `badge ${memory.cloud_allowed ? 'cloud' : ''}`, memory.active ? (memory.cloud_allowed ? 'Cloud-approved' : 'Local only') : 'Inactive'), el('p', 'help', memory.owner_id ? `Private · ${state.bulters.find(b => b.id === memory.owner_id)?.name || 'Unknown'}` : 'Shared workspace'), el('h3', '', memory.title), el('p', 'memory-content', memory.content));
+    card.append(el('span', `badge ${memory.cloud_allowed ? 'cloud' : ''}`, memory.active ? (memory.cloud_allowed ? 'Cloud-approved' : 'Local only') : 'Inactive'), el('p', 'help', memory.owner_id ? `Private · ${[...state.bulters, ...(state.removed_bulters || [])].find(b => b.id === memory.owner_id)?.name || 'Unknown'}` : 'Shared workspace'), el('h3', '', memory.title), el('p', 'memory-content', memory.content));
     if (memory.source_type === 'obsidian') card.append(el('p', 'help', `Edit in Obsidian: ${memory.source_path} · Source: ${memory.source}`));
     else card.append(button('Edit memory', 'secondary', () => openMemory(memory)));
     return card;
@@ -204,7 +256,7 @@ async function refresh() {
 }
 async function connections() {
   $('#refresh-models').disabled = true;
-  try { providers = await api('providers'); renderProviders(); renderBulters(); }
+  try { providers = await api('providers'); renderProviders(); renderBulters(); if ($('#bulter-dialog').open) providerModels(); }
   catch (error) { notify(error.message); }
   finally { $('#refresh-models').disabled = false; }
 }
@@ -221,10 +273,11 @@ $('#sync-obsidian').addEventListener('click', async () => {
 });
 $('#team-mission').addEventListener('click', () => showView('missions'));
 $('#refresh-models').addEventListener('click', connections);
-$('#bulter-provider').addEventListener('change', () => { $('#bulter-model').value = ''; providerModels(); });
+$('#bulter-provider').addEventListener('change', () => { $('#bulter-custom-model').value = ''; providerModels(''); });
+$('#bulter-model').addEventListener('change', modelEntryMode);
 $('#bulter-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const data = {name: $('#bulter-name').value, role: $('#bulter-role').value, instructions: $('#bulter-instructions').value, provider: $('#bulter-provider').value, model: $('#bulter-model').value, shared_memory: $('#bulter-shared').checked};
+  const data = {name: $('#bulter-name').value, role: $('#bulter-role').value, instructions: $('#bulter-instructions').value, provider: $('#bulter-provider').value, model: selectedModel(), shared_memory: $('#bulter-shared').checked, output_tokens: Number($('#bulter-output').value), context_tokens: Number($('#bulter-context').value), thinking: $('#bulter-thinking').value};
   const id = $('#bulter-id').value;
   try { await api(id ? `bulters/${id}` : 'bulters', id ? 'PUT' : 'POST', data); $('#bulter-dialog').close(); await refresh(); notify('Bulter saved. Its model runs only when you start a mission.'); }
   catch (error) { $('#bulter-form .form-error').textContent = error.message; }
@@ -253,3 +306,47 @@ setInterval(async () => {
   try { await refresh(); } catch (error) { notify(error.message); } finally { polling = false; }
 }, 1200);
 init();
+
+async function renderUploads() {
+  const documents = await api('documents');
+  $('#upload-list').replaceChildren();
+  for (const doc of documents.reverse()) {
+    const card = el('article', 'card');
+    card.append(el('h3', '', doc.filename), el('p', 'help', `${doc.status} · ${doc.chunks.length} memory parts · local only`));
+    for (const [i, content] of doc.chunks.entries()) {
+      const detail = el('details'); detail.append(el('summary', '', `Part ${i + 1}`), el('pre', 'step-output', content)); card.append(detail);
+    }
+    if (doc.status === 'draft') card.append(button('Approve all parts as local shared memory', 'primary', async () => {
+      try { await api(`documents/${doc.id}/approve`, 'POST'); await renderUploads(); await refresh(); notify('Approved notes imported into Obsidian memory.'); }
+      catch (error) { $('#upload-status').textContent = error.message; }
+    }));
+    $('#upload-list').append(card);
+  }
+}
+$('#upload-document').addEventListener('click', async () => {
+  $('#upload-dialog').showModal();
+  try { await renderUploads(); } catch (error) { $('#upload-status').textContent = error.message; }
+});
+$('#extract-document').addEventListener('click', async () => {
+  const file = $('#upload-file').files[0];
+  if (!file || file.size > 10 * 1024 * 1024) { $('#upload-status').textContent = 'Choose a file up to 10 MB.'; return; }
+  $('#extract-document').disabled = true; $('#upload-status').textContent = 'Extracting locally…';
+  try {
+    const response = await fetch(`/api/documents?filename=${encodeURIComponent(file.name)}`, {method: 'POST', headers: {'X-Bulter-Token': token, 'Content-Type': 'application/octet-stream'}, body: file});
+    const data = await response.json(); if (!response.ok) throw new Error(data.detail);
+    $('#upload-status').textContent = 'Review the extracted text below. Nothing is used as memory until approved.';
+    await renderUploads();
+  } catch (error) { $('#upload-status').textContent = error.message; }
+  finally { $('#extract-document').disabled = false; }
+});
+
+$('#remove-bulter-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submit = $('#remove-bulter-form button[type="submit"]'); submit.disabled = true;
+  try {
+    await api(`bulters/${$('#remove-bulter-id').value}`, 'DELETE');
+    $('#remove-bulter-dialog').close(); await refresh();
+    notify('Bulter removed. You can create a replacement or restore it from Removed Bulters.');
+  } catch (error) { $('#remove-bulter-form .form-error').textContent = error.message; }
+  finally { submit.disabled = false; }
+});

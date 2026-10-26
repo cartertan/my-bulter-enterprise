@@ -32,6 +32,12 @@ The screenshot uses a simulated model-discovery response; model IDs are placehol
 
 ![Local and cloud model connection options](screenshots/models.jpg)
 
+### Document upload and review
+
+Extract documents locally, inspect each part and explicitly approve local-only shared memory in Obsidian. This screenshot uses a synthetic test note.
+
+![Document memory review and approval](screenshots/document-memory.jpg)
+
 ## Warnings
 
 - This gallery shows an application preview, not a hosted service. GitHub Pages cannot run the Python/Ollama backend.

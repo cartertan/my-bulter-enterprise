@@ -2,6 +2,23 @@
 
 A local-first, single-user AI team dashboard built with Codex. Each **Bulter** has a name, specialty, instructions, provider, model and explicit memory access. A **mission** passes one brief through one to four Bulters in the order you choose.
 
+### Document workflows added 26 October 2026
+
+- Upload TXT, Markdown, text PDF, DOCX or PPTX; review extracted text before approving local-only Obsidian memory.
+- Download the final response of a completed mission as editable Word or PowerPoint files.
+- Configure Ollama context, output and thinking settings per Bulter.
+- See the [document workflow guide](docs/DOCUMENT_WORKFLOW.md), [application gallery](docs/GALLERY.md) and [GitHub upload instructions](docs/UPLOAD_2026-10-26.md).
+
+The current validation suite contains 64 passing tests. Qwen3.8:27b was downloaded on the development Mac; model weights and personal runtime data are excluded from this repository. Downloaded models do not change existing Bulter assignments automatically.
+
+### Edit, remove and recreate Bulters
+
+- Choose **Edit** on an existing Bulter, pick any discovered model from **Model ID**, and save. The picker refreshes discovery when opened and retains saved IDs if a provider is offline. Choose **Enter a custom model ID** for an ID not listed, including paid-provider models.
+- Choose **Remove** and confirm to take a Bulter off the active team. Removal is blocked while that Bulter is in a queued or running mission. Its history and private notes are retained.
+- Choose **Create Bulter** to create a replacement with a new identity. A replacement does not inherit the removed Bulter's private notes, even when it has the same name.
+- Expand **Removed Bulters** and choose **Restore** to recover the original identity and its private-note access.
+- Model changes apply to future missions; saved and already-running mission snapshots retain their original assignments.
+
 ### Start from a cloned or extracted repository
 
 1. Open Terminal.
