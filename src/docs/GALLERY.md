@@ -42,3 +42,25 @@ Extract documents locally, inspect each part and explicitly approve local-only s
 
 - This gallery shows an application preview, not a hosted service. GitHub Pages cannot run the Python/Ollama backend.
 - Never replace these images with screenshots containing private notes, customer information, credentials or personal mission history without review.
+
+## Model concierge
+
+Work recommendations with live chat availability and verified MFLUX picture readiness. This screenshot shows model guidance only, with no personal notes or credentials.
+
+![Model concierge](screenshots/model-concierge.jpg)
+
+## Local image examples
+
+Synthetic samples generated locally with MFLUX 0.23.0 at 512 × 512, seed 42. No personal memory or customer content was used. JPEG previews are provided here; the release kit includes original PNG files.
+
+### FLUX.2 Klein 4B · 4-bit
+
+![Locally generated butler illustration](screenshots/flux-example.jpg)
+
+### Z-Image Turbo · 4-bit
+
+![Locally generated warm library](screenshots/photo-example.jpg)
+
+### Verified picture engine
+
+![Both local picture models ready](screenshots/image-engine-ready.jpg)

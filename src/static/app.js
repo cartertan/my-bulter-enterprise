@@ -5,6 +5,7 @@ const $ = (selector) => document.querySelector(selector);
 const token = $('meta[name="bulter-token"]').content;
 let state = {bulters: [], memories: [], missions: []};
 let providers = [];
+let imageEngine = null;
 let team = [];
 let filter = 'all';
 let selectedMission = null;
@@ -87,7 +88,7 @@ function openBulter(bot = null, starter = null) {
   $('#bulter-thinking').value = bot?.thinking || 'auto';
   $('#bulter-shared').checked = bot?.shared_memory || false;
   $('#bulter-dialog-title').textContent = bot ? 'Edit your Bulter' : 'Create a Bulter';
-  providerModels(bot?.model || '');
+  providerModels(bot?.model || starter?.model || '');
   $('#bulter-dialog').showModal();
   connections();
 }
@@ -236,7 +237,32 @@ function renderMemory() {
   }));
   if (!state.memories.length) $('#memory-list').append(el('p', 'empty', 'No memories yet. Add preferences, useful context, or working principles for your team.'));
 }
+function renderRecommendations() {
+  const local = providers.find(p => p.id === 'ollama');
+  const installed = new Set(local?.installed_models || local?.models || []);
+  const rows = [
+    ['Architecture, PKI and editable diagrams', 'qwen3.8:27b', 'Diagram Bulter for Mermaid text; diagram command for safe SVG'],
+    ['Proposals and general technical drafting', 'qwen3.8:27b', 'Assign to a Bulter; provide source notes and verify claims'],
+    ['Quick summaries and everyday drafting', 'gemma4:e4b', 'Lightweight first draft; use a reviewer for important work'],
+    ['Python, shell and code review', 'devstral-small-2:latest', 'Draft code as text; review and test before execution'],
+    ['Document review and second opinion', 'granite4.1:30b', 'Use as a separate review step with the original evidence'],
+    ['Alternative reasoning and analysis', 'qwen3.6:35b-a3b', 'Keep as an existing alternative; compare on your own tasks'],
+    ['Illustrations and visual concepts', 'FLUX.2 Klein 4B · MFLUX', 'Local illustrations: run the flux command'],
+    ['Photorealism and bilingual lettering', 'Z-Image Turbo · MFLUX', 'Local photos: run the photo command; check lettering'],
+    ['Future semantic memory retrieval', 'qwen3-embedding:4b', 'Embedding only; current memory search does not use it']
+  ];
+  $('#model-recommendations').replaceChildren(...rows.map(([work, model, usage]) => {
+    const row = el('tr');
+    const availability = local?.status.startsWith('Connected') ? (installed.has(model) ? 'Installed' : 'Not installed') : 'Connection unavailable';
+    const imageTask = model.startsWith('FLUX.') ? 'flux' : model.startsWith('Z-Image') ? 'photo' : null;
+    const status = imageTask ? (imageEngine?.models?.[imageTask]?.status || 'Image engine status unavailable') : availability;
+    for (const value of [work, model, usage, status]) row.append(el('td', '', value));
+    return row;
+  }));
+}
+$('#diagram-bulter').addEventListener('click', () => openBulter(null, {name: 'Draftsman', role: 'Architecture and diagram specialist', model: 'qwen3.8:27b', instructions: 'Draft concise Mermaid flowcharts with explicit assumptions. Use only components and relationships supported by the brief and permitted notes. Return diagram source as text, followed by a short explanation. Do not include scripts, links or external resources. Never invent product capabilities.'}));
 function renderProviders() {
+  renderRecommendations();
   const localModels = providers.filter(p => !p.cloud).flatMap(p => p.models);
   $('#stat-models').textContent = localModels.length;
   $('#model-note').textContent = providers.some(p => !p.cloud && p.status.startsWith('Connected')) ? 'Available on your Mac' : 'Start Ollama or LM Studio';
@@ -244,11 +270,30 @@ function renderProviders() {
     const card = el('article', 'card provider-card');
     const top = el('div', 'card-top'); top.append(el('h3', '', p.label), el('span', `badge ${p.cloud ? 'cloud' : ''}`, p.cloud ? 'Cloud' : 'Local'));
     card.append(top, el('p', '', p.status));
+    if (p.cloud) {
+      card.append(button(p.credential?.configured ? 'Replace API key' : 'Add API key', 'secondary', () => {
+        $('#credential-form').reset(); $('#credential-form .form-error').textContent = '';
+        $('#credential-provider').value = p.id; $('#credential-title').textContent = `${p.label} API key`;
+        $('#credential-dialog').showModal();
+      }));
+      if (p.credential?.configured) card.append(button('Remove saved key', 'secondary', () => {
+        $('#disconnect-provider').value = p.id; $('#disconnect-form .form-error').textContent = '';
+        $('#disconnect-title').textContent = `Remove saved ${p.label} key?`; $('#disconnect-dialog').showModal();
+      }));
+    }
+    if (p.image_models?.length) card.append(el('p', 'help', `Image weights: ${p.image_models.join(', ')}. ${p.image_generation_status || 'Inference unverified'}.`));
     if (p.models.length) {
       const list = el('ul'); for (const model of p.models) list.append(el('li', '', model)); card.append(list);
     } else card.append(el('p', '', p.cloud ? 'Assign an exact model ID to a Bulter. API availability and billing depend on your provider account.' : 'Start the local server, then check connections again.'));
     $('#provider-grid').append(card); return card;
   }));
+  const images = el('article', 'card provider-card');
+  images.append(el('h3', '', 'MFLUX · local pictures'), el('p', 'help', 'Separate Apple Silicon engine. No API key; terminal workflow.'));
+  for (const task of ['flux', 'photo']) {
+    const model = imageEngine?.models?.[task];
+    images.append(el('p', '', `${model?.label || task}: ${model?.status || 'Status unavailable'}`));
+  }
+  $('#provider-grid').append(images);
 }
 async function refresh() {
   state = await api('state');
@@ -256,7 +301,7 @@ async function refresh() {
 }
 async function connections() {
   $('#refresh-models').disabled = true;
-  try { providers = await api('providers'); renderProviders(); renderBulters(); if ($('#bulter-dialog').open) providerModels(); }
+  try { [providers, imageEngine] = await Promise.all([api('providers'), api('image-engine')]); renderProviders(); renderBulters(); if ($('#bulter-dialog').open) providerModels(); }
   catch (error) { notify(error.message); }
   finally { $('#refresh-models').disabled = false; }
 }
@@ -348,5 +393,29 @@ $('#remove-bulter-form').addEventListener('submit', async (event) => {
     $('#remove-bulter-dialog').close(); await refresh();
     notify('Bulter removed. You can create a replacement or restore it from Removed Bulters.');
   } catch (error) { $('#remove-bulter-form .form-error').textContent = error.message; }
+  finally { submit.disabled = false; }
+});
+
+$('#credential-dialog').addEventListener('close', () => $('#credential-form').reset());
+$('#credential-dialog').addEventListener('cancel', () => $('#credential-form').reset());
+window.addEventListener('pagehide', () => $('#credential-form').reset());
+$('#credential-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const field = $('#credential-key');
+  const submit = $('#credential-form button[type="submit"]'); submit.disabled = true;
+  let secret = field.value; field.value = '';
+  try {
+    await api(`credentials/${$('#credential-provider').value}`, 'PUT', {api_key: secret});
+    $('#credential-dialog').close(); await connections(); notify('Key saved in macOS Keychain. Provider access remains unverified until a mission runs.');
+  } catch (error) { $('#credential-form .form-error').textContent = error.message; }
+  finally { secret = ''; submit.disabled = false; }
+});
+$('#disconnect-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submit = $('#disconnect-form button[type="submit"]'); submit.disabled = true;
+  try {
+    await api(`credentials/${$('#disconnect-provider').value}`, 'DELETE');
+    $('#disconnect-dialog').close(); await connections(); notify('Saved key removed from this instance. Remote key was not revoked.');
+  } catch (error) { $('#disconnect-form .form-error').textContent = error.message; }
   finally { submit.disabled = false; }
 });

@@ -97,15 +97,11 @@ Starter templates are UI suggestions, not preinstalled bot records. New clones d
 
 ### 7. Optional cloud configuration
 
-| Dashboard provider | Process environment variable |
-| --- | --- |
-| OpenAI | `OPENAI_API_KEY` |
-| Claude | `ANTHROPIC_API_KEY` |
-| OpenRouter | `OPENROUTER_API_KEY` |
+Open **Models & connections** and choose **Add API key** for OpenAI, Claude or OpenRouter. Paste a provider API key into the password field and save it to macOS Keychain. Do not use CLI sign-in tokens. Existing environment keys are not imported or used as fallback.
 
-Supply the chosen variable using your existing secure local environment workflow, then start/restart the app from that environment. Never put actual values in Git, documentation, prompts or memory. The app does not automatically read `.env` files and does not provide a key-entry UI. No credential files are created by these instructions.
+The database contains only an instance identity and credential-status metadata. Keys are excluded from Obsidian, source files and mission records. See [credential setup and security boundaries](CREDENTIALS_AND_VISUALS.md).
 
-Enter an exact provider model ID on the Bulter. Key presence only means a variable exists; it does not validate access. Before a mission with any cloud step, the UI asks for explicit approval to transmit the brief, cloud-approved notes and previous Bulter outputs. All local-only notes are excluded from the entire mixed mission. Verify account billing and limits before use.
+Assign an exact provider model ID to a Bulter. Saved status is not proof of provider access. Before a cloud mission, the UI asks for explicit approval to transmit the brief, cloud-approved notes and handoff outputs. Local-only notes are excluded from the entire mixed mission. Configure provider billing and spending limits separately.
 
 ### Troubleshooting
 

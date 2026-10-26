@@ -123,6 +123,13 @@ API requests require the process-generated `X-Bulter-Token`, delivered in the in
 - **Explicit notes:** understandable access rules; no automatic extraction, semantic retrieval or vector index.
 - **No paid retries:** avoids accidental duplicate billing; transient failures require a deliberate rerun.
 
+## Optional local image engine
+
+- A separate MFLUX environment uses pinned 4-bit FLUX.2 Klein 4B and Z-Image Turbo snapshots. It does not share provider credentials or Obsidian retrieval with image jobs.
+- Explicit setup downloads model data. Generation runs offline in a subprocess, passes prompts over stdin, serializes GPU jobs and saves PNGs without embedded prompt metadata.
+- The dashboard reads lightweight local readiness receipts through the protected `/api/image-engine` endpoint. It does not load GPU models when rendering the page.
+- Image generation is currently a terminal workflow, separate from sequential text missions. See [local diagrams and pictures](LOCAL_VISUALS.md).
+
 ## Warnings
 
 - One process is essential: the in-memory active-task guard does not coordinate multiple workers.

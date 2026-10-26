@@ -1,14 +1,13 @@
 """Bounded text generation over documented model APIs.
 
 Purpose: Discover local models and normalize provider streams.
-Inputs: Validated provider, model, messages; optional process-held API keys.
+Inputs: Validated provider, model, messages; explicit transient Keychain API keys.
 Outputs: Text chunks, or sanitized ProviderError messages.
 Assumptions: Single-user local application; no automatic paid retries or fallback.
 Author: Carter Tan.
 """
 
 import json
-import os
 from collections.abc import AsyncIterator
 
 import httpx
@@ -31,23 +30,40 @@ def is_cloud(provider: str) -> bool:
     return bool(PROVIDERS[provider]["key"])
 
 
+def is_image_model(model: str) -> bool:
+    """Identify the supported experimental image families, which cannot serve chat."""
+    return model.lower().split(":", 1)[0] in {"x/flux2-klein", "x/z-image-turbo"}
+
+
 async def discover(provider: str) -> dict:
     """Discover local models; check cloud credential presence without paid calls."""
     spec = PROVIDERS[provider]
     result = {"id": provider, "label": spec["label"], "cloud": is_cloud(provider), "models": []}
     if spec["key"]:
-        result["status"] = "Key available · unverified" if os.environ.get(spec["key"]) else "API key needed"
+        result["status"] = "API key needed"
         return result
     try:
         path = "/api/tags" if provider == "ollama" else "/v1/models"
         async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
             response = await client.get(spec["base"] + path)
             response.raise_for_status()
+            if provider == "ollama":
+                try:
+                    version_response = await client.get(spec["base"] + "/api/version")
+                    version_response.raise_for_status()
+                    version = version_response.json().get("version", "unknown")
+                    result["image_generation_status"] = ("Unavailable in Ollama 0.40.11" if version == "0.40.11" else "Image inference not validated for this Ollama version")
+                except (httpx.HTTPError, ValueError, TypeError):
+                    result["image_generation_status"] = "Image inference capability unknown"
         data = response.json()
         entries = data["models"] if provider == "ollama" else data["data"]
+        # Keep experimental image models separate from chat assignments.
+        names = [m["name" if provider == "ollama" else "id"] for m in entries]
+        result["installed_models"] = names
+        result["image_models"] = [name for name in names if is_image_model(name)]
         # Embedding-only models cannot answer chat requests.
         result["models"] = [m["name" if provider == "ollama" else "id"] for m in entries
-                            if not any(s in m.get("name", m.get("id", "")).lower()
+                            if not is_image_model(m.get("name", m.get("id", ""))) and not any(s in m.get("name", m.get("id", "")).lower()
                                        for s in ("embed", "bge-m3", "cloud"))]
         result["status"] = "Connected" if result["models"] else "Connected · no chat models"
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
@@ -55,14 +71,14 @@ async def discover(provider: str) -> dict:
     return result
 
 
-def request_spec(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None) -> tuple:
+def request_spec(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None, api_key: str | None = None) -> tuple:
     """Build a provider-specific request using a fixed endpoint allowlist."""
     options = options or {}
     spec = PROVIDERS[provider]
     headers = {"Content-Type": "application/json"}
-    key = os.environ.get(spec["key"], "") if spec["key"] else None
+    key = api_key if spec["key"] else None
     if spec["key"] and not key:
-        raise ProviderError(f"{spec['label']} needs a server-side {spec['key']}. See the setup guide.")
+        raise ProviderError(f"{spec['label']} needs a key in Models & connections.")
     if provider == "anthropic":
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
         path = "/v1/messages"
@@ -112,9 +128,9 @@ def parse_event(provider: str, event: dict) -> tuple[str, bool]:
     return choices[0].get("delta", {}).get("content") or "", choices[0].get("finish_reason") == "stop"
 
 
-async def generate(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None) -> AsyncIterator[str]:
+async def generate(provider: str, model: str, system: str, messages: list[dict], options: dict | None = None, api_key: str | None = None) -> AsyncIterator[str]:
     """Stream bounded text with explicit timeout and no automatic billing retries."""
-    url, headers, body = request_spec(provider, model, system, messages, options)
+    url, headers, body = request_spec(provider, model, system, messages, options, api_key)
     completed = False
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:

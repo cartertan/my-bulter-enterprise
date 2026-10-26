@@ -9,7 +9,7 @@ A local-first, single-user AI team dashboard built with Codex. Each **Bulter** h
 - Configure Ollama context, output and thinking settings per Bulter.
 - See the [document workflow guide](docs/DOCUMENT_WORKFLOW.md), [application gallery](docs/GALLERY.md) and [GitHub upload instructions](docs/UPLOAD_2026-10-26.md).
 
-The current validation suite contains 64 passing tests. Qwen3.8:27b was downloaded on the development Mac; model weights and personal runtime data are excluded from this repository. Downloaded models do not change existing Bulter assignments automatically.
+The current validation suite contains 83 passing tests. Qwen3.8:27b was downloaded on the development Mac; model weights and personal runtime data are excluded from this repository. Downloaded models do not change existing Bulter assignments automatically.
 
 ### Edit, remove and recreate Bulters
 
@@ -54,13 +54,13 @@ Two starter Bulters, Atlas and Scribe, and a clearly labelled demo memory were c
 | --- | --- | --- | --- |
 | Ollama | `http://127.0.0.1:11434` | Run Ollama and choose an installed chat model | Local discovery and generation tested |
 | LM Studio | `http://127.0.0.1:1234` | Developer tab → start local server; load a chat model | Adapter implemented; not live tested |
-| OpenAI | `https://api.openai.com/v1/responses` | Server environment `OPENAI_API_KEY`; exact model ID | Payload/parser tests; paid call not tested |
-| Claude | `https://api.anthropic.com/v1/messages` | Server environment `ANTHROPIC_API_KEY`; exact model ID | Payload/parser tests; paid call not tested |
-| OpenRouter | `https://openrouter.ai/api/v1/chat/completions` | Server environment `OPENROUTER_API_KEY`; exact model ID | Payload/parser tests; paid call not tested |
+| OpenAI | `https://api.openai.com/v1/responses` | OpenAI API key in macOS Keychain; exact model ID | Payload/parser tests; paid call not tested |
+| Claude | `https://api.anthropic.com/v1/messages` | Claude API key in macOS Keychain; exact model ID | Payload/parser tests; paid call not tested |
+| OpenRouter | `https://openrouter.ai/api/v1/chat/completions` | OpenRouter API key in macOS Keychain; exact model ID | Payload/parser tests; paid call not tested |
 
 - The provider picker is API-based. Do not assume a consumer ChatGPT or Claude subscription grants these API calls; confirm API credentials, model access and billing with the provider.
-- Supply keys through the server's process environment using your existing secure workflow, then restart the dashboard. The app does not read or modify existing credential or `.env` files.
-- Never paste keys into prompts, memories, the model ID field or this chat. There is intentionally no browser key-entry form in this version.
+- Add provider keys under **Models & connections → Add API key**. Keys are stored in instance-scoped macOS Keychain entries; only non-secret status metadata is stored in SQLite. No environment fallback is used.
+- Never paste keys into prompts, Obsidian, the model ID field or chat. Use only the dedicated password-entry dialog. See [credentials and local visual models](docs/CREDENTIALS_AND_VISUALS.md).
 - The dashboard reports key presence only, not validity. It makes no cloud discovery request and no automatic paid retry.
 - The launcher uses fixed documented provider endpoints. Arbitrary remote hosts and custom gateways are intentionally unsupported in this phase.
 
@@ -136,6 +136,10 @@ Tests cover memory isolation and egress, explicit cloud approval, credential abs
 - [OpenAI text generation](https://developers.openai.com/api/docs/guides/text).
 - [Claude Messages API](https://platform.claude.com/docs/en/api/messages/create).
 - [OpenRouter chat completions](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion).
+
+## Local visual workflows and model guidance
+
+The home-page model concierge table maps work requirements to installed models. Create a Qwen diagram Bulter with the shortcut, or use the local command for validated SVG diagrams. Pictures use a separate offline MFLUX engine with pinned 4-bit FLUX and Z-Image models. See [Local visual workflows](docs/LOCAL_VISUALS.md). Image models are separate from chat missions.
 
 ## Warnings
 

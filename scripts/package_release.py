@@ -21,10 +21,11 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
-    ".gitignore", "README.md", "scripts/run.sh", "scripts/package_release.py",
+    ".gitignore", "src/local_visuals.py", "src/image_engine.py", "src/mflux_worker.py", "scripts/setup_images.py", "src/image-requirements.txt", "src/tests/test_local_visuals.py", "src/docs/LOCAL_VISUALS.md", "src/docs/screenshots/model-concierge.jpg", "src/docs/screenshots/image-engine-ready.jpg", "src/docs/screenshots/flux-example.jpg", "src/docs/screenshots/photo-example.jpg", "README.md", "scripts/run.sh", "scripts/package_release.py",
     "src/.gitignore", "src/__init__.py", "src/app.py", "src/providers.py", "src/storage.py",
     "src/documents.py", "src/tests/test_documents.py", "src/docs/DOCUMENT_WORKFLOW.md", "src/docs/screenshots/document-memory.jpg",
     "src/docs/UPLOAD_2026-10-26.md",
+    "src/credentials.py", "src/tests/test_credentials.py", "src/docs/CREDENTIALS_AND_VISUALS.md",
     "src/requirements.txt", "src/README.md", "src/static/index.html", "src/static/style.css",
     "src/static/app.js", "src/tests/test_app.py", "src/tests/test_package.py",
     "src/docs/SETUP.md", "src/docs/ARCHITECTURE.md", "src/docs/BUILD_ACTIVITY.md",

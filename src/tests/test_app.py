@@ -47,6 +47,10 @@ def wait_mission(client: TestClient) -> dict:
 def test_local_security(client: TestClient) -> None:
     """Reject unauthorized reads, foreign origins and rebinding hostnames."""
     assert client.get("/api/state", headers={"x-bulter-token": "wrong"}).status_code == 403
+    assert client.get("/api/image-engine", headers={"x-bulter-token": "wrong"}).status_code == 403
+    status = client.get("/api/image-engine")
+    assert status.status_code == 200
+    assert "files" not in status.text and "revision" not in status.text
     assert client.get("/api/state", headers={"origin": "https://attacker.example"}).status_code == 403
     assert client.get("/api/state", headers={"host": "attacker.example"}).status_code == 403
     assert client.get("/api/state", headers={"sec-fetch-site": "cross-site"}).status_code == 403
@@ -92,7 +96,7 @@ def test_ordered_handoff_and_snapshot(client: TestClient) -> None:
     second = add_bot(client, "Scribe")
     calls = []
 
-    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None):
+    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None, **kwargs):
         """Capture incoming context and emit synthetic text."""
         calls.append(messages[0]["content"])
         yield "First result" if len(calls) == 1 else "Reviewed result"
@@ -109,13 +113,17 @@ def test_ordered_handoff_and_snapshot(client: TestClient) -> None:
 
 def test_no_cross_cloud_memory_transit(client: TestClient, monkeypatch) -> None:
     """Even the local first step excludes local-only notes in a mixed mission."""
-    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-credential")
+    from unittest.mock import Mock
+    credentials = client.app.state.credentials
+    credentials.backend = Mock()
+    credentials.backend.get_password.return_value = "synthetic-test-credential"
+    credentials.store.put("credential", {"id": "openai", "configured": True})
     local = add_bot(client, shared=True)
     remote = add_bot(client, "Remote", provider="openai", shared=True)
     client.post("/api/memories", json={"title": "Private policy", "content": "DO_NOT_TRANSMIT", "cloud_allowed": False})
     calls = []
 
-    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None):
+    async def fake_generate(provider: str, model: str, system: str, messages: list, options=None, **kwargs):
         """Observe every step without making a network request."""
         calls.append(messages[0]["content"])
         yield "Safe synthetic output"
@@ -131,7 +139,7 @@ def test_cancellation_and_busy_guard(client: TestClient) -> None:
     """A stopped mission keeps partial output and prevents subsequent steps."""
     bot = add_bot(client)
 
-    async def slow_generate(provider: str, model: str, system: str, messages: list, options=None):
+    async def slow_generate(provider: str, model: str, system: str, messages: list, options=None, **kwargs):
         """Leave the upstream request active until cancellation."""
         yield "Partial"
         await asyncio.sleep(20)
@@ -152,7 +160,7 @@ def test_failure_stops_chain(client: TestClient) -> None:
     """Provider errors never become successful handoffs or hidden retries."""
     first, second = add_bot(client), add_bot(client, "Reviewer")
 
-    async def failing_generate(provider: str, model: str, system: str, messages: list, options=None):
+    async def failing_generate(provider: str, model: str, system: str, messages: list, options=None, **kwargs):
         """Emit partial output before a synthetic network failure."""
         yield "Incomplete"
         raise ProviderError("Synthetic connection failure")
@@ -197,14 +205,12 @@ def test_provider_streams(provider: str, event: dict, text: str, done: bool) -> 
 
 def test_paid_payloads(monkeypatch) -> None:
     """API envelopes are provider-specific and keys do not enter prompt bodies."""
-    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
-        monkeypatch.setenv(key, "synthetic-test-credential")
     for provider in ("openai", "anthropic", "openrouter"):
-        url, headers, body = request_spec(provider, "model", "Instructions", [{"role": "user", "content": "Hello"}])
+        url, headers, body = request_spec(provider, "model", "Instructions", [{"role": "user", "content": "Hello"}], api_key="synthetic-test-credential")
         assert url.startswith("https://")
         assert "synthetic-test-credential" not in str(body)
         assert body["stream"] is True
-    assert request_spec("openai", "model", "Hi", [])[2]["store"] is False
+    assert request_spec("openai", "model", "Hi", [], api_key="synthetic-test-credential")[2]["store"] is False
 
 
 def test_memory_update(client: TestClient) -> None:

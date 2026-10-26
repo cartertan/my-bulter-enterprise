@@ -4,4 +4,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 umask 077
-exec python3 -m uvicorn src.app:create_app --factory --host 127.0.0.1 --port 8765 --no-access-log
+bulter_python=python3
+if [[ -x src/.venv/bin/python3 ]]; then
+  bulter_python=src/.venv/bin/python3
+fi
+exec "$bulter_python" -m uvicorn src.app:create_app --factory --host 127.0.0.1 --port 8765 --no-access-log

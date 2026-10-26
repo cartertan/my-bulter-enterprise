@@ -29,10 +29,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.providers import PROVIDERS, ProviderError, discover, generate, is_cloud
+from src.image_engine import engine_status
+from src.providers import PROVIDERS, ProviderError, discover, generate, is_cloud, is_image_model
 from src.storage import Store
 from src.obsidian import DEFAULT_VAULT, FOLDERS, sync_notes, read_notes
 from src.documents import MAX_UPLOAD, chunks, export_mission
+from src.credentials import Credentials, CredentialError, PROVIDERS as KEY_PROVIDERS
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
@@ -59,6 +61,8 @@ class BulterInput(StrictInput):
     @model_validator(mode="after")
     def local_model_only(self):
         """Do not mislabel Ollama cloud-routed model IDs as local inference."""
+        if self.provider == "ollama" and is_image_model(self.model):
+            raise ValueError("Image models use the local visual workflow, not Bulter chat missions.")
         if self.provider == "ollama" and "cloud" in self.model.lower():
             raise ValueError("Ollama cloud models are not supported in local mode. Choose a downloaded model.")
         return self
@@ -148,12 +152,14 @@ def select_memory(memories: list[dict], bot: dict, cloud: bool, prompt: str,
     return selected
 
 
-def create_app(database: Path | None = None, vault: Path | None = None) -> FastAPI:
+def create_app(database: Path | None = None, vault: Path | None = None, credential_backend=None) -> FastAPI:
     """Create an isolated application; tests inject a disposable database."""
     store = Store(database or Path(os.environ.get("BULTER_DATA_DIR", str(ROOT / ".runtime"))) / "bulter.sqlite3")
     vault = vault or (database.parent / "vault" if database else DEFAULT_VAULT)
     csrf = secrets.token_urlsafe(32)
     tasks: dict[str, asyncio.Task] = {}
+    credentials = Credentials(store, credential_backend)
+    credential_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -174,6 +180,7 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
     app = FastAPI(title="My Bulter Enterprise", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.csrf = csrf
+    app.state.credentials = credentials
 
     @app.middleware("http")
     async def local_guard(request: Request, call_next):
@@ -327,7 +334,51 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
     @app.get("/api/providers")
     async def provider_status() -> list:
         """Check local endpoints; never generate paid requests."""
-        return await asyncio.gather(*(discover(p) for p in PROVIDERS))
+        results = await asyncio.gather(*(discover(p) for p in PROVIDERS))
+        for result in results:
+            if result["id"] in KEY_PROVIDERS:
+                result["credential"] = credentials.status(result["id"])
+                result["status"] = "Saved in Keychain · unverified" if result["credential"]["configured"] else "API key needed"
+        return results
+
+    @app.get("/api/image-engine")
+    async def image_engine() -> dict:
+        """Read local image readiness without GPU work or outbound requests."""
+        return await asyncio.to_thread(engine_status)
+
+    @app.put("/api/credentials/{provider}")
+    async def save_credential(provider: str, request: Request) -> dict:
+        """Accept a write-only secret; never echo validation input back to the client."""
+        if tasks:
+            raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeError):
+            raise HTTPException(400, "Provide a JSON object containing only api_key.") from None
+        if not isinstance(data, dict) or set(data) != {"api_key"}:
+            raise HTTPException(400, "Provide a JSON object containing only api_key.")
+        try:
+            async with credential_lock:
+                if tasks:
+                    raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
+                return await asyncio.to_thread(credentials.save, provider, data["api_key"])
+        except CredentialError as exc:
+            raise HTTPException(400, str(exc)) from None
+        finally:
+            data.clear()
+
+    @app.delete("/api/credentials/{provider}")
+    async def remove_credential(provider: str) -> dict:
+        """Disconnect the local Keychain entry; remote revocation is separate."""
+        if tasks:
+            raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
+        try:
+            async with credential_lock:
+                if tasks:
+                    raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
+                return await asyncio.to_thread(credentials.remove, provider)
+        except CredentialError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.post("/api/bulters")
     async def add_bulter(data: BulterInput) -> dict:
@@ -402,11 +453,14 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
                     mission["steps"].append(step)
                     store.put("mission", mission)
                     system, messages = build_context(bot, notes, mission["prompt"], handoffs)
-                    async for chunk in generate(bot["provider"], bot["model"], system, messages, options=bot):
+                    # Credentials are a separate call argument, never part of a bot or mission snapshot.
+                    auth = {"api_key": await asyncio.to_thread(credentials.get, bot["provider"])} if is_cloud(bot["provider"]) else {}
+                    async for chunk in generate(bot["provider"], bot["model"], system, messages, options=bot, **auth):
                         step["output"] += chunk
                         if len(step["output"]) > 16000:
                             raise ProviderError("The response exceeded the text limit. Partial output has been kept.")
                         store.put("mission", mission)
+                    auth.clear()
                     if not step["output"].strip():
                         raise ProviderError("The model returned no text. Choose a chat-capable model.")
                     step["status"] = "completed"
@@ -415,7 +469,7 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
             mission["status"] = "completed"
         except asyncio.CancelledError:
             mission.update(status="cancelled", error="Stopped by you or application shutdown. Partial output is retained.")
-        except (ProviderError, TimeoutError) as exc:
+        except (ProviderError, CredentialError, TimeoutError) as exc:
             mission.update(status="failed", error=str(exc) or "The mission exceeded its ten-minute limit.")
         except Exception:
             # Never log exception text: remote payloads can contain sensitive data.
@@ -432,6 +486,8 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
     @app.post("/api/missions")
     async def start_mission(data: MissionInput) -> dict:
         """Snapshot the team and policy before any model receives data."""
+        if credential_lock.locked():
+            raise HTTPException(409, "Wait for the Keychain operation to finish before starting a mission.")
         if tasks:
             raise HTTPException(409, "A mission is already running. Stop it or wait for completion.")
         bots = [store.get("bulter", identifier) for identifier in data.bulter_ids]
@@ -441,9 +497,8 @@ def create_app(database: Path | None = None, vault: Path | None = None) -> FastA
         if cloud and not data.cloud_consent:
             raise HTTPException(400, "Approve cloud data sharing for this mission first.")
         for bot in bots:
-            key = PROVIDERS[bot["provider"]]["key"]
-            if key and not os.environ.get(key):
-                raise HTTPException(400, f"{PROVIDERS[bot['provider']]['label']} needs a server-side API key.")
+            if is_cloud(bot["provider"]) and not credentials.status(bot["provider"])["configured"]:
+                raise HTTPException(400, f"{PROVIDERS[bot['provider']]['label']} needs an API key in Models & connections.")
         # Revalidate before each run so revoked notes cannot silently remain usable.
         try:
             sync_notes(store, vault)
