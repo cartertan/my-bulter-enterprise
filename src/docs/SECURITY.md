@@ -1,5 +1,9 @@
 ## Security model and publication boundaries
 
+### Connector extension — 27 October 2026
+
+See [connector security and setup](CONNECTORS.md) for OAuth, Telegram pairing, local-only evidence, action confirmation and the separate browser-MCP threat boundary. External actions are now possible through user-confirmed previews; model outputs cannot invoke them. Gmail snippets, calendar details, incoming Telegram text and action bodies are private runtime records, never source-package content. The OAuth callback is the sole cross-site GET exception and requires expiring single-use state plus PKCE. Launch with access logging disabled. Browser MCP listens only on loopback and is not authenticated against other local processes.
+
 ### Intended deployment
 
 - One trusted macOS user, one server worker, `127.0.0.1:8765` only.

@@ -26,3 +26,8 @@ body{background:radial-gradient(ellipse at 80% 0,#33281a55,transparent 48%),var(
 .recommendations th, .recommendations td { padding: 13px 12px; border-bottom: 1px solid #3b342a; vertical-align: top; }
 .recommendations td:nth-child(2) { color: #ebd5af; font-family: monospace; }
 .visual-commands { display: grid; gap: 10px; overflow-x: auto; font-size: 12px; }
+.connector-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto; font-size: 13px; line-height: 1.6; }
+#view-connectors > .panel { margin-top: 24px; }
+#view-connectors .card-grid > .panel { min-width: 0; }
+#view-connectors button, #view-connectors a { margin: 8px 8px 8px 0; }
+#view-connectors code { overflow-wrap: anywhere; }

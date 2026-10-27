@@ -1,9 +1,14 @@
 ## My Bulter Enterprise — Application gallery
 
 The Evening Service interface pairs warm charcoal with ivory and brass accents.
-These screenshots show the real application with **synthetic demonstration data**.
-Names, model IDs, connection states, notes and mission outputs are illustrative.
-They do not expose a user's private vault or demonstrate a paid-provider connection.
+The initial screenshots use synthetic demonstration data; later captures are labelled individually.
+No screenshot exposes private vault text, inbox content, credentials or paid-provider account data.
+
+### Connected accounts — Chrome capture, 27 October 2026
+
+This is an actual Chrome capture of the development instance: Google OAuth is authorized, Telegram is paired, and the browser card records a successful earlier capture. Credential-entry fields are empty; Telegram identifiers are omitted from the status display. LinkedIn remains a manual workflow, not a connected inbox integration. These connections are instance-specific and are not bundled with the source.
+
+![Google authorized, Telegram paired and recorded browser capture in Chrome](screenshots/connectors-connected.jpg)
 
 ### Dashboard
 

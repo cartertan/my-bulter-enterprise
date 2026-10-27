@@ -48,8 +48,9 @@ function showView(name) {
     if (n.dataset.view === name) n.setAttribute('aria-current', 'page');
     else n.removeAttribute('aria-current');
   });
-  $('#breadcrumb').textContent = {bulters: 'Bulters', missions: 'Missions', memory: 'Memory', models: 'Models & connections'}[name];
+  $('#breadcrumb').textContent = {bulters: 'Bulters', missions: 'Missions', memory: 'Memory', models: 'Models & connections', connectors: 'Connectors'}[name];
   if (name === 'missions') renderTeam();
+  if (name === 'connectors') refreshConnectors().catch(error => notify(error.message));
 }
 function selectedModel() {
   return $('#bulter-model').value === '__custom__' ? $('#bulter-custom-model').value.trim() : $('#bulter-model').value;
@@ -337,7 +338,8 @@ $('#memory-form').addEventListener('submit', async (event) => {
 $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
-    const mission = await api('missions', 'POST', {prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked});
+    const mission = await api('missions', 'POST', {prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...connectorMissionOptions()});
+    clearConnectorSelection();
     selectedMission = mission.id; $('#cloud-consent').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }
 });

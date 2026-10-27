@@ -2,6 +2,12 @@
 
 A local-first, single-user AI team dashboard built with Codex. Each **Bulter** has a name, specialty, instructions, provider, model and explicit memory access. A **mission** passes one brief through one to four Bulters in the order you choose.
 
+### Account connectors added 27 October 2026
+
+The **Connectors** page supports Google OAuth for Gmail and primary Calendar, a paired Telegram bot, and supervised Playwright MCP browser snapshots. External writes require exact previews and confirmation. Selected connector evidence is local-only. Follow the [connector setup and security guide](docs/CONNECTORS.md); Google/Telegram need your own consent and credentials before live use.
+
+See the [27 October release and GitHub publishing steps](docs/UPLOAD_2026-10-27.md) and the [Chrome connected-status screenshot](docs/screenshots/connectors-connected.jpg). The development instance has Google authorization, recorded Gmail fetches and Telegram pairing; each new installation must connect its own accounts.
+
 ### Document workflows added 26 October 2026
 
 - Upload TXT, Markdown, text PDF, DOCX or PPTX; review extracted text before approving local-only Obsidian memory.
@@ -9,7 +15,7 @@ A local-first, single-user AI team dashboard built with Codex. Each **Bulter** h
 - Configure Ollama context, output and thinking settings per Bulter.
 - See the [document workflow guide](docs/DOCUMENT_WORKFLOW.md), [application gallery](docs/GALLERY.md) and [GitHub upload instructions](docs/UPLOAD_2026-10-26.md).
 
-The current validation suite contains 83 passing tests. Qwen3.8:27b was downloaded on the development Mac; model weights and personal runtime data are excluded from this repository. Downloaded models do not change existing Bulter assignments automatically.
+The validation suite covers core workflows and connector authorization/action boundaries. Qwen3.8:27b was downloaded on the development Mac; model weights and personal runtime data are excluded from this repository. Downloaded models do not change existing Bulter assignments automatically.
 
 ### Edit, remove and recreate Bulters
 

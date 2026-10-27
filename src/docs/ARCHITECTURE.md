@@ -1,5 +1,9 @@
 ## Architecture and design decisions
 
+### Connector extension — 27 October 2026
+
+The [connector guide](CONNECTORS.md) documents the additional Google, Telegram and browser-MCP paths. The dashboard user explicitly fetches local-only reference snapshots and confirms frozen external-action previews. Models still have no execution tools. Connector evidence is snapshotted into local missions; any cloud step rejects it. Optional Telegram completion notices contain only the mission ID and status. Connection grants and tokens live in instance-scoped Keychain entries, while action/evidence records remain in the private SQLite runtime store. This extends the original model-only architecture below.
+
 ### Objective and assumptions
 
 - Give one Mac user a visible team of specialist AI bots with independent model assignments.

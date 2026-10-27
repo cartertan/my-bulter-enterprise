@@ -21,6 +21,9 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
+    "src/docs/UPLOAD_2026-10-27.md", "src/docs/screenshots/connectors-connected.jpg",
+    "src/connectors.py", "src/connector_routes.py", "src/static/connectors.js",
+    "src/tests/test_connectors.py", "src/docs/CONNECTORS.md", "scripts/run_browser_mcp.sh",
     ".gitignore", "src/local_visuals.py", "src/image_engine.py", "src/mflux_worker.py", "scripts/setup_images.py", "src/image-requirements.txt", "src/tests/test_local_visuals.py", "src/docs/LOCAL_VISUALS.md", "src/docs/screenshots/model-concierge.jpg", "src/docs/screenshots/image-engine-ready.jpg", "src/docs/screenshots/flux-example.jpg", "src/docs/screenshots/photo-example.jpg", "README.md", "scripts/run.sh", "scripts/package_release.py",
     "src/.gitignore", "src/__init__.py", "src/app.py", "src/providers.py", "src/storage.py",
     "src/documents.py", "src/tests/test_documents.py", "src/docs/DOCUMENT_WORKFLOW.md", "src/docs/screenshots/document-memory.jpg",
@@ -75,9 +78,10 @@ def collect(root: Path) -> dict[str, bytes]:
                 raise ValueError(f"Symlink not allowed: {name}")
             current = current.parent
         data = path.read_bytes()
-        if name.endswith(".jpg"):
+        if name.endswith((".jpg", ".png")):
             # Only explicitly allowlisted, reviewed demo screenshots are packaged.
-            if not data.startswith(b"\xff\xd8\xff") or len(data) > 10_000_000:
+            signature = b"\x89PNG\r\n\x1a\n" if name.endswith(".png") else b"\xff\xd8\xff"
+            if not data.startswith(signature) or len(data) > 10_000_000:
                 raise ValueError(f"Invalid or oversized screenshot: {name}")
         else:
             validate_text(name, data)
