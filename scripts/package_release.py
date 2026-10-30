@@ -21,6 +21,11 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
+    "scripts/check_release.py", "src/tests/test_mission_reliability.py", "src/docs/REMEDIATION_PLAN.md",
+    "src/docs/learning/README.md", "src/docs/learning/BUTLER_CASE_STUDY.md",
+    "src/docs/learning/WORKFLOW_TEMPLATES.md",
+    "src/attachments.py", "src/attachment_routes.py", "src/static/attachments.js",
+    "src/tests/test_attachments.py", "src/docs/MISSION_ATTACHMENTS.md", "src/docs/screenshots/mission-attachments.jpg",
     "src/docs/UPLOAD_2026-10-27.md", "src/docs/screenshots/connectors-connected.jpg",
     "src/connectors.py", "src/connector_routes.py", "src/static/connectors.js",
     "src/tests/test_connectors.py", "src/docs/CONNECTORS.md", "scripts/run_browser_mcp.sh",

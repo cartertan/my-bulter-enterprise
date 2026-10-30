@@ -169,11 +169,14 @@ function renderMissions() {
   $('#mission-list').replaceChildren();
   for (const mission of state.missions) {
     const item = button('', 'mission-item', () => {selectedMission = mission.id; renderDetail();});
-    item.append(el('span', `badge ${mission.status === 'failed' ? 'cloud' : ''}`, mission.status), el('p', '', mission.prompt), el('small', '', `${mission.team.map(b => b.name).join(' → ')} · ${new Date(mission.created).toLocaleString()}`));
+    item.append(el('span', `badge ${['failed', 'completed_with_issues'].includes(mission.status) ? 'cloud' : ''}`, missionStatusLabel(mission.status)), el('p', '', mission.prompt), el('small', '', `${mission.team.map(b => b.name).join(' → ')} · ${new Date(mission.created).toLocaleString()}`));
     $('#mission-list').append(item);
   }
   if (!state.missions.length) $('#mission-list').append(el('p', 'empty', 'Your first mission starts here. Completed work and interrupted responses will stay in this activity log.'));
   renderDetail();
+}
+function missionStatusLabel(status) {
+  return status === 'completed_with_issues' ? 'Review finished · incomplete draft' : status === 'partial' ? 'Incomplete draft' : status;
 }
 function renderDetail() {
   const target = $('#mission-detail');
@@ -182,7 +185,7 @@ function renderDetail() {
   if (!mission) return;
   const panel = el('div', 'panel');
   const head = el('div', 'mission-detail-head');
-  head.append(el('h2', '', 'Mission workspace'), el('span', 'badge', mission.status));
+  head.append(el('h2', '', 'Mission workspace'), el('span', `badge ${mission.status === 'completed_with_issues' ? 'cloud' : ''}`, missionStatusLabel(mission.status)));
   if (['running', 'queued'].includes(mission.status)) head.append(button('Stop mission', 'secondary', async () => {
     try { await api(`missions/${mission.id}/stop`, 'POST'); await refresh(); }
     catch (error) { notify(error.message); }
@@ -203,12 +206,17 @@ function renderDetail() {
     }));
   }
   panel.append(head, el('p', 'brief', mission.prompt));
+  panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
+  if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
+  renderMissionAttachments(mission, panel);
   if (mission.error) panel.append(el('p', 'error', mission.error));
   for (const [index, step] of mission.steps.entries()) {
     const block = el('div', 'step');
     const title = el('div', 'step-head');
-    title.append(el('strong', '', `${index + 1}. ${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', 'badge', step.status));
-    block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes · output handed to subsequent Bulters`), el('pre', 'step-output', step.output || 'Waiting for the model’s first words…'));
+    title.append(el('strong', '', `${index + 1}. ${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', `badge ${step.status === 'partial' ? 'cloud' : ''}`, missionStatusLabel(step.status)));
+    block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes`));
+    if (step.error) block.append(el('p', 'error', step.error));
+    block.append(el('pre', 'step-output', step.output || (['queued', 'running'].includes(step.status) ? 'Waiting for the model’s first words…' : 'No output was retained.')));
     panel.append(block);
   }
   target.append(panel);
@@ -298,6 +306,7 @@ function renderProviders() {
 }
 async function refresh() {
   state = await api('state');
+  $('#partial-review-row').hidden = !state.capabilities?.partial_output_review;
   renderBulters(); renderMemory(); renderMissions(); renderTeam();
 }
 async function connections() {
@@ -338,9 +347,10 @@ $('#memory-form').addEventListener('submit', async (event) => {
 $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
-    const mission = await api('missions', 'POST', {prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...connectorMissionOptions()});
-    clearConnectorSelection();
-    selectedMission = mission.id; $('#cloud-consent').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
+    const partialReview = state.capabilities?.partial_output_review && $('#review-partial-output').checked ? {review_partial_output: true} : {};
+    const mission = await api('missions', 'POST', {prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    clearConnectorSelection(); clearMissionAttachments();
+    selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }
 });
 async function init() {
