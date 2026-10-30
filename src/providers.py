@@ -25,6 +25,10 @@ class ProviderError(Exception):
     """Safe-to-display provider failure, without remote payloads or credentials."""
 
 
+class OutputLimitError(ProviderError):
+    """Explicit length exhaustion; eligible for an opted-in partial handoff."""
+
+
 def is_cloud(provider: str) -> bool:
     """Return whether a provider sends data outside this Mac."""
     return bool(PROVIDERS[provider]["key"])
@@ -82,12 +86,12 @@ def request_spec(provider: str, model: str, system: str, messages: list[dict], o
     if provider == "anthropic":
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
         path = "/v1/messages"
-        body = {"model": model, "system": system, "messages": messages, "max_tokens": 2048, "stream": True}
+        body = {"model": model, "system": system, "messages": messages, "max_tokens": options.get("output_tokens", 2048), "stream": True}
     elif provider == "openai":
         headers["Authorization"] = f"Bearer {key}"
         path = "/v1/responses"
         body = {"model": model, "instructions": system, "input": messages,
-                "max_output_tokens": 2048, "store": False, "stream": True}
+                "max_output_tokens": options.get("output_tokens", 2048), "store": False, "stream": True}
     elif provider == "ollama":
         path = "/api/chat"
         body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
@@ -97,7 +101,7 @@ def request_spec(provider: str, model: str, system: str, messages: list[dict], o
         if key:
             headers["Authorization"] = f"Bearer {key}"
         body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
-                "max_tokens": 2048, "stream": True}
+                "max_tokens": options.get("output_tokens", 2048), "stream": True}
     if provider == "ollama" and options.get("thinking", "auto") != "auto":
         body["think"] = options["thinking"] == "on"
     return spec["base"] + path, headers, body
@@ -109,22 +113,26 @@ def parse_event(provider: str, event: dict) -> tuple[str, bool]:
         raise ProviderError("The provider rejected or interrupted this request. Check the model and account.")
     if provider == "ollama":
         if event.get("done") and event.get("done_reason") == "length":
-            raise ProviderError("The output limit was reached; partial output has been kept.")
+            raise OutputLimitError("The output limit was reached; partial output has been kept.")
         return event.get("message", {}).get("content", ""), bool(event.get("done"))
     if provider == "openai":
         if event.get("type") == "response.incomplete":
+            if event.get("response", {}).get("incomplete_details", {}).get("reason") == "max_output_tokens":
+                raise OutputLimitError("The output limit was reached; partial output has been kept.")
             raise ProviderError("The response reached a provider limit; partial output has been kept.")
         return (event.get("delta", "") if event.get("type") == "response.output_text.delta" else "",
                 event.get("type") == "response.completed")
     if provider == "anthropic":
         delta = event.get("delta", {})
+        if delta.get("stop_reason") == "max_tokens":
+            raise OutputLimitError("The output limit was reached; partial output has been kept.")
         return (delta.get("text", "") if delta.get("type") == "text_delta" else "",
                 event.get("type") == "message_stop")
     choices = event.get("choices", [])
     if not choices:
         return "", False
     if choices[0].get("finish_reason") == "length":
-        raise ProviderError("The output limit was reached; partial output has been kept.")
+        raise OutputLimitError("The output limit was reached; partial output has been kept.")
     return choices[0].get("delta", {}).get("content") or "", choices[0].get("finish_reason") == "stop"
 
 
