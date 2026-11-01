@@ -91,6 +91,7 @@ class MissionInput(StrictInput):
     evidence_ids: list[str] = Field(default_factory=list, max_length=3)
     required_memory_ids: list[str] = Field(default_factory=list, max_length=20)
     sections: list[str] = Field(default_factory=list, max_length=6)
+    review_criteria: list[str] = Field(default_factory=list, max_length=8)
     telegram_notify: bool = False
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     attachment_cloud_consent: bool = False
@@ -105,9 +106,11 @@ class MissionInput(StrictInput):
             raise ValueError("Partial-output review requires at least two Bulters in reference mode.")
         if self.sections and (self.attachment_mode != "reference" or self.template_id):
             raise ValueError("Section missions use reference mode without an export template.")
+        if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode != "reference" or self.template_id):
+            raise ValueError("Structured review requires two Bulters in reference mode without an export template.")
         return self
 
-    @field_validator("sections")
+    @field_validator("sections", "review_criteria")
     @classmethod
     def bounded_sections(cls, values: list[str]) -> list[str]:
         """Require explicit, unique scopes instead of silently splitting a brief."""
@@ -146,6 +149,72 @@ def section_prompt(prompt: str, scope: str) -> str:
     """Constrain one section while retaining the original brief verbatim."""
     return prompt if not scope else (prompt + "\n\nCURRENT SECTION ONLY:\n" + scope
         + "\nProduce or review only this section. Other sections are separate work items; do not claim they are complete.")
+
+
+class CriterionReview(StrictInput):
+    """A model assessment with verifiable draft quotations, not user acceptance."""
+    criterion_id: str = Field(min_length=1, max_length=30)
+    result: Literal["pass", "fail", "unknown"]
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence_quotes: list[str] = Field(max_length=8)
+
+
+class DraftReview(StrictInput):
+    """Bind the complete criterion set to one exact retained draft."""
+    draft_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    criteria: list[CriterionReview] = Field(min_length=1, max_length=8)
+
+
+def draft_hash(output: str) -> str:
+    """Hash exact retained text without normalizing whitespace or encoding."""
+    return hashlib.sha256(output.encode()).hexdigest()
+
+
+def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None = None) -> str:
+    """Expose user-defined criteria and, for the reviewer, a strict response schema."""
+    if not criteria:
+        return prompt
+    result = prompt + "\n\nREVIEW CRITERIA:\n" + json.dumps(
+        {f"criterion-{index + 1}": text for index, text in enumerate(criteria)}, ensure_ascii=False)
+    if reviewed_hash is not None:
+        result += ('\nReturn only JSON with exactly these fields: {"draft_hash":"' + reviewed_hash
+                   + '\", "criteria":[{"criterion_id":"criterion-1", "result":"pass|fail|unknown", '
+                   '"reason":"explanation", "evidence_quotes":["exact quotation from the author draft"]}]}. '
+                   'Include every criterion exactly once. A pass requires a nonempty exact draft quotation. '
+                   'Do not add agent identity or invent quotations. Draft quotations do not verify external facts. '
+                   'Missing evidence must be fail or unknown. Assess only the retained author draft.')
+    return result
+
+
+def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str) -> dict:
+    """Fail closed on malformed, stale, forged or incomplete model assessments."""
+    record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
+              "draft_hash": draft_hash(author["output"]), "section_id": author["section_id"],
+              "draft_revision": author["draft_revision"], "state": "invalid", "criteria": []}
+    try:
+        def unique_fields(pairs: list[tuple]) -> dict:
+            """Reject duplicate JSON keys instead of accepting a hidden overwrite."""
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate review field")
+                result[key] = value
+            return result
+        review = DraftReview.model_validate(json.loads(output, object_pairs_hook=unique_fields))
+        expected = {f"criterion-{index + 1}" for index in range(len(criteria))}
+        if (review.draft_hash != record["draft_hash"] or len(review.criteria) != len(expected)
+                or {item.criterion_id for item in review.criteria} != expected):
+            raise ValueError("Stale draft or incorrect criteria")
+        for item in review.criteria:
+            if item.result == "pass" and (not item.evidence_quotes or author["status"] != "completed"):
+                raise ValueError("Missing or incomplete draft evidence")
+            if any(not quote.strip() or len(quote) > 2000 or quote not in author["output"] for quote in item.evidence_quotes):
+                raise ValueError("Unverifiable draft quotation")
+        record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
+                      criteria=[item.model_dump() for item in review.criteria])
+    except (ValueError, TypeError):
+        record["error"] = "Review is invalid: check the JSON schema, draft hash, criterion coverage and exact quotations."
+    return record
 
 
 def eligible_memory(memories: list[dict], bot: dict, cloud_mission: bool) -> list[dict]:
@@ -412,8 +481,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if not mission:
             raise HTTPException(404, "Mission not found.")
         try:
-            if mission.get("sections"):
-                raise ValueError("Section drafts require artifact assembly before Office export. Export JSON to inspect all checkpoints.")
+            if mission.get("sections") or mission.get("review_criteria"):
+                raise ValueError("Section drafts and structured reviews require artifact assembly before Office export. Export JSON to inspect all checkpoints.")
             if use_template:
                 attachment = store.get("attachment", mission.get("template_id", ""))
                 if not attachment or Path(attachment["filename"]).suffix.lower() != "." + format_name:
@@ -432,7 +501,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -572,6 +641,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot_index == 0:
                         handoffs = list(reference_handoffs)
                     prompt = section_prompt(mission["prompt"], scope)
+                    criteria = mission.get("review_criteria", [])
+                    author = mission["steps"][work_index - 1] if bot_index == 1 else None
+                    prompt = criteria_prompt(prompt, criteria, draft_hash(author["output"]) if author else None)
                     if work_index < len(mission["steps"]):
                         retained = mission["steps"][work_index]
                         handoffs.append({"name": retained["name"], "output": retained["output"], "status": "completed"})
@@ -622,11 +694,16 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         raise ProviderError("The model returned no text. Choose a chat-capable model.")
                     if step["status"] != "partial":
                         step["status"] = "completed"
+                    if criteria and author:
+                        step["review"] = validate_draft_review(step["output"], author, criteria, bot["id"])
+                        if step["status"] != "completed":
+                            step["review"]["state"] = "invalid"
+                        step["review_state"] = step["review"]["state"]
                     handoffs.append({"name": bot["name"], "output": step["output"], "status": step["status"]})
                     store.put("mission", mission)
-            mission["status"] = "completed_with_issues" if any(s["status"] == "partial" for s in mission["steps"]) else "completed"
+            mission["status"] = "completed_with_issues" if any(s["status"] == "partial" or s.get("review_state") in {"invalid", "needs_revision"} for s in mission["steps"]) else "completed"
             if mission["status"] == "completed_with_issues":
-                mission["error"] = "Review finished with incomplete source output. No accepted deliverable is established."
+                mission["error"] = "Review finished with incomplete output or unresolved review findings. No accepted deliverable is established."
         except asyncio.CancelledError:
             mission.update(status="cancelled", error="Stopped by you or application shutdown. Partial output is retained.")
         except (ProviderError, CredentialError, TimeoutError) as exc:
@@ -720,13 +797,13 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 raise HTTPException(400, str(exc)) from exc
         try:
             required_notes = [m for m in memories if m["id"] in data.required_memory_ids]
-            section_budgets = [plan_handoff_budgets(bots, section_prompt(data.prompt, scope), initial, required_notes)
+            section_budgets = [plan_handoff_budgets(bots, criteria_prompt(section_prompt(data.prompt, scope), data.review_criteria, "0" * 64), initial, required_notes)
                                for scope in (data.sections or [""])]
             handoff_budgets = section_budgets[0]
         except ProviderError as exc:
             raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
-                   "resume_attempt": 0, "sections": data.sections, "section_budgets": section_budgets,
+                   "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "section_budgets": section_budgets,
                    "planned_calls": len(bots) * max(1, len(data.sections)),
                    "required_memory_ids": list(dict.fromkeys(data.required_memory_ids)),
                    "required_memory_revisions": {m["id"]: revision_hash(m) for m in required_notes},

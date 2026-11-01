@@ -422,3 +422,78 @@ def test_invalid_section_plans_rejected_before_inference(tmp_path: Path, section
         response = client.post('/api/missions', json={'prompt': 'Review', 'bulter_ids': ['one'], 'sections': sections, 'attachment_mode': mode})
         assert response.status_code == 422
         generate_mock.assert_not_called()
+
+
+@pytest.mark.parametrize('variant', ['valid', 'fail', 'unknown', 'missing', 'duplicate', 'stale', 'forged_identity', 'invented_quote', 'no_quote', 'partial_author', 'duplicate_key', 'prose'])
+def test_structured_review_fails_closed(variant: str) -> None:
+    """Only complete, exact-draft assessments can claim criterion-level success."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    author = {'bulter_id': 'author', 'output': 'Issuance uses explicit consent.', 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    item = {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Consent is stated',
+            'evidence_quotes': ['explicit consent']}
+    payload = {'draft_hash': draft_hash(author['output']), 'criteria': [item]}
+    if variant in {'fail', 'unknown'}:
+        item.update(result=variant, evidence_quotes=[])
+    elif variant == 'missing':
+        payload['criteria'] = []
+    elif variant == 'duplicate':
+        payload['criteria'].append(dict(item))
+    elif variant == 'stale':
+        payload['draft_hash'] = '0' * 64
+    elif variant == 'forged_identity':
+        payload['reviewer_id'] = 'another reviewer'
+    elif variant == 'invented_quote':
+        item['evidence_quotes'] = ['Invented external source']
+    elif variant == 'no_quote':
+        item['evidence_quotes'] = []
+    elif variant == 'partial_author':
+        author['status'] = 'partial'
+    output = json.dumps(payload)
+    if variant == 'duplicate_key':
+        output = output.replace('"result": "pass"', '"result": "fail", "result": "pass"')
+    elif variant == 'prose':
+        output = 'Everyone agrees this passes.'
+    result = validate_draft_review(output, author, ['Require consent'], 'actual-reviewer')
+    assert result['reviewer_id'] == 'actual-reviewer'
+    assert result['draft_hash'] == draft_hash(author['output'])
+    assert result['state'] == ('criteria_pass' if variant == 'valid' else 'needs_revision' if variant in {'fail', 'unknown'} else 'invalid')
+
+
+@pytest.mark.parametrize('verdict', ['pass', 'fail', 'invalid'])
+def test_structured_review_mission_records_identity_and_keeps_acceptance_separate(tmp_path: Path, verdict: str) -> None:
+    """Validated model assessments remain separate from execution and approval."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'review.sqlite3')
+    calls = []
+    draft = 'Wallet issuance requires explicit consent.'
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return a synthetic draft and a criterion-bound reviewer response."""
+        calls.append(messages[0]['content'])
+        assert 'criterion-1' in calls[-1]
+        if len(calls) == 1:
+            yield draft
+        elif verdict == 'invalid':
+            yield 'Author and Reviewer both agree.'
+        else:
+            assert draft_hash(draft) in calls[-1]
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': verdict, 'reason': 'Synthetic assessment',
+                 'evidence_quotes': ['explicit consent'] if verdict == 'pass' else []}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft and review', 'bulter_ids': [b['id'] for b in bots],
+            'review_criteria': ['Require explicit consent']})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == ('completed' if verdict == 'pass' else 'completed_with_issues')
+        assert mission['acceptance_status'] == 'not_assessed'
+        record = mission['steps'][1]['review']
+        assert record['reviewer_id'] == bots[1]['id'] and record['author_id'] == bots[0]['id']
+        assert record['draft_hash'] == draft_hash(draft)
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
