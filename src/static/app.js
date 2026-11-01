@@ -164,6 +164,7 @@ function renderTeam() {
   $('#cloud-consent-row').hidden = !useCloud;
   $('#cloud-consent').required = useCloud;
   $('#egress-note').textContent = useCloud ? 'Local-only notes will be excluded from ALL steps of this mission, including local steps. Provider keys and model access must be configured.' : 'This mission uses local providers only. No automatic cloud fallback.';
+  $('#section-input-row').hidden = !state.capabilities?.section_checkpoints;
   renderRequiredMemory();
   $('#run-mission').disabled = !team.length || state.missions.some(m => ['queued', 'running'].includes(m.status));
 }
@@ -237,7 +238,7 @@ function renderDetail() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(mission, null, 2)], {type: 'application/json'}));
     const a = document.createElement('a'); a.href = url; a.download = `bulter-mission-${mission.id}.json`; a.click(); URL.revokeObjectURL(url);
   }));
-  if (mission.status === 'completed') for (const [format, label] of [['docx', 'Download Word'], ['pptx', 'Download PowerPoint']]) {
+  if (mission.status === 'completed' && !mission.sections?.length) for (const [format, label] of [['docx', 'Download Word'], ['pptx', 'Download PowerPoint']]) {
     head.append(button(label, 'secondary', async () => {
       try {
         const response = await fetch(`/api/missions/${mission.id}/export/${format}`, {headers: {'X-Bulter-Token': token}});
@@ -251,13 +252,20 @@ function renderDetail() {
   panel.append(head, el('p', 'brief', mission.prompt));
   if (mission.parent_mission_id) panel.append(el('p', 'help', `Recovery attempt ${mission.resume_attempt} · original mission ${mission.parent_mission_id}. Completed steps are reused; unfinished steps restart.`));
   panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
+  if (mission.sections?.length) {
+    for (const [index, scope] of mission.sections.entries()) {
+      const steps = mission.steps.filter(step => step.section_id === `section-${index + 1}`);
+      const complete = steps.filter(step => step.status === 'completed').length;
+      panel.append(el('p', 'help', `Section ${index + 1}: ${scope} · ${complete}/${mission.team.length} calls completed · acceptance not assessed`));
+    }
+  }
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
   renderMissionAttachments(mission, panel);
   if (mission.error) panel.append(el('p', 'error', mission.error));
   for (const [index, step] of mission.steps.entries()) {
     const block = el('div', 'step');
     const title = el('div', 'step-head');
-    title.append(el('strong', '', `${index + 1}. ${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', `badge ${step.status === 'partial' ? 'cloud' : ''}`, missionStatusLabel(step.status)));
+    title.append(el('strong', '', `${index + 1}. ${step.section_scope ? step.section_id + ' · ' : ''}${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', `badge ${step.status === 'partial' ? 'cloud' : ''}`, missionStatusLabel(step.status)));
     block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes`));
     for (const note of step.memory_provenance || []) block.append(el('p', 'help', `${note.title} · ${note.category} · ${note.source_path || 'Local memory'} · SHA-256 ${note.revision}`));
     if (step.error) block.append(el('p', 'error', step.error));
@@ -394,8 +402,9 @@ $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
     const partialReview = state.capabilities?.partial_output_review && $('#review-partial-output').checked ? {review_partial_output: true} : {};
+    const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
-    const mission = await api('missions', 'POST', {...requiredNotes, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();
     selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }

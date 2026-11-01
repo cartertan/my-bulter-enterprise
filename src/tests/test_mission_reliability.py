@@ -353,3 +353,72 @@ def test_required_memory_preflight_rejects_before_generation(tmp_path: Path) -> 
         assert response.status_code == 400
         generate_mock.assert_not_called()
         assert not app.state.store.all('mission')
+
+
+def test_sections_isolate_handoffs_and_resume_from_exact_checkpoint(tmp_path: Path) -> None:
+    """A failed second-section review never reruns completed first-section work."""
+    path = tmp_path / 'sections.sqlite3'
+    app = create_app(path)
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Generate two independent drafts; interrupt the last reviewer."""
+        content = messages[0]['content']
+        calls.append(content)
+        assert 'SHARED_SOURCE' in content
+        if len(calls) <= 2:
+            assert 'CURRENT SECTION ONLY:\nIssuance' in content
+        else:
+            assert 'CURRENT SECTION ONLY:\nPresentation' in content
+            assert 'ISSUANCE_DRAFT' not in content
+            assert 'ISSUANCE_REVIEW' not in content
+        if len(calls) == 4:
+            yield 'Interrupted final review'
+            raise ProviderError('Synthetic interruption')
+        yield ['ISSUANCE_DRAFT', 'ISSUANCE_REVIEW', 'PRESENTATION_DRAFT'][len(calls) - 1]
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        app.state.store.put('connector_evidence', {'id': 'source', 'text': 'SHARED_SOURCE'})
+        response = client.post('/api/missions', json={'prompt': 'Explain national wallet flows',
+            'sections': ['Issuance', 'Presentation'], 'bulter_ids': [bot['id'] for bot in bots], 'evidence_ids': ['source']})
+        assert response.status_code == 200
+        original = wait_mission(client)
+        assert original['planned_calls'] == 4 and len(calls) == 4
+        assert original['status'] == 'failed'
+        assert [step['section_id'] for step in original['steps']] == ['section-1', 'section-1', 'section-2', 'section-2']
+    fresh = create_app(path)
+    recovered_calls = []
+
+    async def recovery(provider, model, system, messages, **kwargs):
+        """Only the unfinished review runs with its own section's draft."""
+        recovered_calls.append(messages)
+        content = messages[0]['content']
+        assert 'PRESENTATION_DRAFT' in content and 'ISSUANCE_DRAFT' not in content
+        yield 'Final review'
+
+    with TestClient(fresh) as client, patch('src.app.generate', recovery):
+        client.headers['x-bulter-token'] = fresh.state.csrf
+        assert client.post(f"/api/missions/{original['id']}/resume", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed' and len(recovered_calls) == 1
+        assert child['steps'][:3] == original['steps'][:3]
+        assert child['steps'][3]['draft_revision'] == 2
+        assert child['steps'][3]['source_revision'] == original['steps'][3]['source_revision']
+        assert child['steps'][3]['review_state'] == 'not_assessed'
+        assert fresh.state.store.get('mission', original['id']) == original
+        assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('sections,mode', [(['Duplicate', 'Duplicate'], 'reference'),
+    ([''], 'reference'), (['x' * 1001], 'reference'), ([str(i) for i in range(7)], 'reference'),
+    (['One'], 'edit'), (['One'], 'reuse_design'), (['One'], 'placeholders')])
+def test_invalid_section_plans_rejected_before_inference(tmp_path: Path, sections: list[str], mode: str) -> None:
+    """Explicit bounds reject unsupported and unbounded call plans."""
+    app = create_app(tmp_path / 'sections.sqlite3')
+    with TestClient(app) as client, patch('src.app.generate') as generate_mock:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/missions', json={'prompt': 'Review', 'bulter_ids': ['one'], 'sections': sections, 'attachment_mode': mode})
+        assert response.status_code == 422
+        generate_mock.assert_not_called()
