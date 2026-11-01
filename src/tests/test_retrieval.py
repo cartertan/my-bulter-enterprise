@@ -45,3 +45,28 @@ def test_handoff_and_no_match() -> None:
     chosen = select_memory([note(str(i), "zebra " * 400) for i in range(40)], BOT, False,
                            "zebra", [{"output": "x" * 16000}])
     build_context(BOT, chosen, "zebra", [{"output": "x" * 16000}])
+
+
+def test_explicit_notes_override_keyword_ranking_without_extra_notes() -> None:
+    """Required preferences cannot be displaced by a misleading topical title."""
+    memories = [note("my preferences", "Use source-qualified claims", category="preference"),
+                note("zebra migration preferences", "Synthetic demo data", category="demo")]
+    assert select_memory(memories, BOT, False, "zebra migration", [], ["my preferences"]) == memories[:1]
+    assert select_memory(memories, BOT, False, "zebra migration", []) == memories[:1]
+    assert select_memory(memories, BOT, False, "zebra migration", [], [memories[1]["id"]]) == memories[1:]
+
+
+@pytest.mark.parametrize("extra,cloud", [({"active": False}, False), ({"owner_id": "other"}, False), ({}, True)])
+def test_required_notes_cannot_bypass_permissions(extra: dict, cloud: bool) -> None:
+    """An explicit selection never grants sharing or cloud permission."""
+    with pytest.raises(ProviderError, match="not permitted"):
+        select_memory([note("required", "content", **extra)], BOT, cloud, "task", [], ["required"])
+
+
+def test_missing_or_oversized_required_notes_are_not_silently_dropped() -> None:
+    """Required-note errors are explicit, including after handoff growth."""
+    with pytest.raises(ProviderError, match="missing"):
+        select_memory([], BOT, False, "task", [], ["deleted"])
+    memories = [note(str(index), "x" * 3000) for index in range(8)]
+    with pytest.raises(ProviderError, match="Context is too large"):
+        select_memory(memories, BOT, False, "task", [], [m["id"] for m in memories])

@@ -313,3 +313,43 @@ def test_cancel_resumed_call_keeps_both_attempts(tmp_path: Path) -> None:
             stopped = client.post(f"/api/missions/{child_id}/stop").json()
             assert stopped["status"] == "cancelled"
             assert app.state.store.get("mission", parent["id"]) == parent
+
+
+def test_required_notes_are_reserved_and_provenance_persisted(tmp_path: Path) -> None:
+    """An unrelated required note survives a large draft and reaches review."""
+    app = create_app(tmp_path / "test.sqlite3")
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Assert pinned evidence is intact in both calls."""
+        calls.append(messages[0]["content"])
+        assert "REQUIRED_PREFERENCE" in calls[-1]
+        assert "DEMO_CONTENT" not in calls[-1]
+        yield "x" * 20000 if len(calls) == 1 else "Review complete"
+
+    with TestClient(app) as client, patch("src.app.generate", stream):
+        client.headers["x-bulter-token"] = app.state.csrf
+        bots = [add_bot(client, "Author", shared=True), add_bot(client, "Reviewer", shared=True)]
+        saved = client.post('/api/memories', json={"title": "Writing preference", "content": "REQUIRED_PREFERENCE" + "a" * 2900, "category": "preference"}).json()
+        client.post('/api/memories', json={"title": "Review", "content": "DEMO_CONTENT", "category": "demo"})
+        result = client.post('/api/missions', json={"prompt": "Review", "bulter_ids": [b["id"] for b in bots],
+            "required_memory_ids": [saved["id"]], "review_partial_output": True})
+        assert result.status_code == 200
+        mission = wait_mission(client)
+        assert len(calls) == 2
+        for step in mission["steps"]:
+            assert step["memory_ids"] == [saved["id"]]
+            assert step["memory_provenance"][0]["category"] == "preference"
+            assert step["memory_provenance"][0]["revision"] == mission["required_memory_revisions"][saved["id"]]
+
+
+def test_required_memory_preflight_rejects_before_generation(tmp_path: Path) -> None:
+    """A revoked selected note fails before any model receives the task."""
+    app = create_app(tmp_path / "test.sqlite3")
+    with TestClient(app) as client, patch('src.app.generate') as generate_mock:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bot = add_bot(client, shared=True)
+        response = client.post('/api/missions', json={"prompt": "Review", "bulter_ids": [bot["id"]], "required_memory_ids": ["missing"]})
+        assert response.status_code == 400
+        generate_mock.assert_not_called()
+        assert not app.state.store.all('mission')

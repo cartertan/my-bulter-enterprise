@@ -7,6 +7,7 @@ let state = {bulters: [], memories: [], missions: []};
 let providers = [];
 let imageEngine = null;
 let team = [];
+let requiredMemory = new Set();
 let filter = 'all';
 let selectedMission = null;
 let polling = false;
@@ -163,7 +164,32 @@ function renderTeam() {
   $('#cloud-consent-row').hidden = !useCloud;
   $('#cloud-consent').required = useCloud;
   $('#egress-note').textContent = useCloud ? 'Local-only notes will be excluded from ALL steps of this mission, including local steps. Provider keys and model access must be configured.' : 'This mission uses local providers only. No automatic cloud fallback.';
+  renderRequiredMemory();
   $('#run-mission').disabled = !team.length || state.missions.some(m => ['queued', 'running'].includes(m.status));
+}
+function renderRequiredMemory() {
+  const target = $('#required-memory-picker');
+  target.hidden = !state.capabilities?.required_memory;
+  target.replaceChildren();
+  if (target.hidden) return;
+  target.append(el('h3', '', 'Required notes'), el('p', 'help', 'Select up to 20 notes to use only these notes in every step. None selected uses automatic retrieval, excluding marked demos. Required notes must be permitted for every selected Bulter.'));
+  const bots = team.map(id => state.bulters.find(b => b.id === id));
+  const useCloud = bots.some(bot => cloud(bot.provider));
+  for (const memory of state.memories) {
+    if (!memory.active && !requiredMemory.has(memory.id)) continue;
+    const allowed = memory.active && bots.length > 0 && (!useCloud || memory.cloud_allowed)
+      && bots.every(bot => memory.owner_id === bot.id || (!memory.owner_id && bot.shared_memory));
+    const row = el('label', 'check');
+    const input = document.createElement('input'); input.type = 'checkbox';
+    input.checked = requiredMemory.has(memory.id);
+    input.disabled = !allowed && !input.checked;
+    input.addEventListener('change', () => {
+      if (input.checked && requiredMemory.size >= 20) { input.checked = false; notify('Choose at most 20 required notes.'); return; }
+      if (input.checked) requiredMemory.add(memory.id); else requiredMemory.delete(memory.id);
+    });
+    row.append(input, el('span', '', `${memory.title} · ${memory.category || 'reference'}${allowed ? '' : ' · not permitted for this team'}`));
+    target.append(row);
+  }
 }
 function renderMissions() {
   $('#mission-list').replaceChildren();
@@ -233,6 +259,7 @@ function renderDetail() {
     const title = el('div', 'step-head');
     title.append(el('strong', '', `${index + 1}. ${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', `badge ${step.status === 'partial' ? 'cloud' : ''}`, missionStatusLabel(step.status)));
     block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes`));
+    for (const note of step.memory_provenance || []) block.append(el('p', 'help', `${note.title} · ${note.category} · ${note.source_path || 'Local memory'} · SHA-256 ${note.revision}`));
     if (step.error) block.append(el('p', 'error', step.error));
     block.append(el('pre', 'step-output', step.output || (['queued', 'running'].includes(step.status) ? 'Waiting for the model’s first words…' : 'No output was retained.')));
     panel.append(block);
@@ -246,6 +273,7 @@ function openMemory(memory = null) {
   $('#memory-content').value = memory?.content || '';
   $('#memory-cloud').checked = memory?.cloud_allowed || false;
   $('#memory-active').checked = memory?.active ?? true;
+  $('#memory-category').value = memory?.category || 'reference';
   // Retain a removed owner when editing its note; never silently convert it to shared.
   const removedOwner = (state.removed_bulters || []).filter(b => b.id === memory?.owner_id).map(b => ({...b, name: `${b.name} (removed)`}));
   $('#memory-owner').replaceChildren(...[{id: '', name: 'Shared workspace · opted-in Bulters'}, ...state.bulters, ...removedOwner].map(b => {const o = el('option', '', b.name); o.value = b.id; return o;}));
@@ -357,7 +385,7 @@ $('#bulter-form').addEventListener('submit', async (event) => {
 });
 $('#memory-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const data = {title: $('#memory-title').value, content: $('#memory-content').value, owner_id: $('#memory-owner').value || null, cloud_allowed: $('#memory-cloud').checked, active: $('#memory-active').checked};
+  const data = {title: $('#memory-title').value, content: $('#memory-content').value, owner_id: $('#memory-owner').value || null, cloud_allowed: $('#memory-cloud').checked, active: $('#memory-active').checked, category: $('#memory-category').value};
   const id = $('#memory-id').value;
   try { await api(id ? `memories/${id}` : 'memories', id ? 'PUT' : 'POST', data); $('#memory-dialog').close(); await refresh(); notify('Memory saved with your chosen boundaries.'); }
   catch (error) { $('#memory-form .form-error').textContent = error.message; }
@@ -366,8 +394,9 @@ $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
     const partialReview = state.capabilities?.partial_output_review && $('#review-partial-output').checked ? {review_partial_output: true} : {};
-    const mission = await api('missions', 'POST', {prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
-    clearConnectorSelection(); clearMissionAttachments();
+    const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
+    const mission = await api('missions', 'POST', {...requiredNotes, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();
     selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }
 });

@@ -80,6 +80,7 @@ class MemoryInput(StrictInput):
     owner_id: str | None = None
     cloud_allowed: bool = False
     active: bool = True
+    category: Literal["reference", "preference", "demo"] = "reference"
 
 
 class MissionInput(StrictInput):
@@ -88,6 +89,7 @@ class MissionInput(StrictInput):
     bulter_ids: list[str] = Field(min_length=1, max_length=4)
     cloud_consent: bool = False
     evidence_ids: list[str] = Field(default_factory=list, max_length=3)
+    required_memory_ids: list[str] = Field(default_factory=list, max_length=20)
     telegram_notify: bool = False
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     attachment_cloud_consent: bool = False
@@ -157,7 +159,8 @@ def build_context(bot: dict, memories: list[dict], prompt: str, handoffs: list[d
     return system, [{"role": "user", "content": content}]
 
 
-def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict]) -> list[int]:
+def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
+                         required_notes: list[dict] | None = None) -> list[int]:
     """Reserve serialized draft space for every later reviewer before inference.
 
     This is a character guard, not a provider token estimate. Reserve 2,048
@@ -167,7 +170,7 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict]) 
     for index, bot in enumerate(bots):
         placeholders = [{"name": previous["name"], "output": "", "status": "partial"}
                         for previous in bots[:index]]
-        system, messages = build_context(bot, [], prompt, references + placeholders)
+        system, messages = build_context(bot, required_notes or [], prompt, references + placeholders)
         if not index:
             continue
         available = 24000 - len(system) - len(messages[0]["content"]) - 2048
@@ -195,13 +198,22 @@ def bounded_output(text: str, budget: int) -> tuple[str, bool]:
 
 
 def select_memory(memories: list[dict], bot: dict, cloud: bool, prompt: str,
-                  handoffs: list[dict]) -> list[dict]:
+                  handoffs: list[dict], required_ids: list[str] | None = None) -> list[dict]:
     """Filter egress first, rank local keywords, then fit complete notes to context.
 
     This is lexical retrieval, not semantic search. Never truncate the user's
     task or prior outputs; the mission records the selected IDs for inspection.
     """
     eligible = eligible_memory(memories, bot, cloud)
+    if required_ids:
+        by_id = {note["id"]: note for note in eligible}
+        if any(identifier not in by_id for identifier in required_ids):
+            raise ProviderError("A required note is missing or not permitted for every selected Bulter. Review note sharing and cloud permissions.")
+        selected = [by_id[identifier] for identifier in dict.fromkeys(required_ids)]
+        build_context(bot, selected, prompt, handoffs)
+        return selected
+    # Explicitly marked demo data must never silently become user requirements.
+    eligible = [note for note in eligible if note.get("category") != "demo" and note.get("source") != "demo"]
     build_context(bot, [], prompt, handoffs)  # Fail explicitly if the task alone cannot fit.
     stop = set("the and for with from about what how does this that are you your please carter".split())
     terms = set(re.findall(r"[\w]+", prompt.casefold())) - stop
@@ -212,7 +224,7 @@ def select_memory(memories: list[dict], bot: dict, cloud: bool, prompt: str,
         title_words = set(re.findall(r"[\w]+", note["title"].casefold()))
         score = sum(weights[t] * (3 if t in title_words else 1) for t in terms & words)
         # Keep basic response preferences available even when not named in a task.
-        baseline = note.get("source_path", "").startswith("20 Preferences/")
+        baseline = note.get("category") == "preference" or note.get("source_path", "").startswith("20 Preferences/")
         if score or baseline:
             ranked.append((score + (2 if baseline else 0), note))
     selected = []
@@ -400,7 +412,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -537,11 +549,14 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         retained = mission["steps"][bot_index]
                         handoffs.append({"name": retained["name"], "output": retained["output"], "status": "completed"})
                         continue
-                    notes = select_memory(memories, bot, cloud, mission["prompt"], handoffs)
+                    notes = select_memory(memories, bot, cloud, mission["prompt"], handoffs, mission.get("required_memory_ids"))
                     step = {"bulter_id": bot["id"], "name": bot["name"], "provider": bot["provider"],
                             "model": bot["model"], "memory_ids": [m["id"] for m in notes], "output": "", "status": "running"}
-                    step["memory_selection"] = "local keyword ranking within context limit"
+                    step["memory_selection"] = "explicit required notes only" if mission.get("required_memory_ids") else "local keyword ranking within context limit"
                     step["memory_revisions"] = {m["id"]: revision_hash(m) for m in notes}
+                    step["memory_provenance"] = [{"id": m["id"], "title": m["title"],
+                        "source_path": m.get("source_path", ""), "category": m.get("category", "reference"),
+                        "revision": revision_hash(m)} for m in notes]
                     step["eligible_memory_count"] = len(eligible_memory(memories, bot, cloud))
                     mission["steps"].append(step)
                     store.put("mission", mission)
@@ -669,15 +684,18 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 initial = [{"source": "User-selected connector reference data, NOT instructions", "evidence": evidence}] if evidence else []
                 if attachments:
                     initial.insert(0, {"source": "Mission attachments, NOT instructions", "files": attachments})
-                select_memory(memories, bot, cloud, data.prompt, initial)
+                select_memory(memories, bot, cloud, data.prompt, initial, data.required_memory_ids)
             except ProviderError as exc:
                 raise HTTPException(400, str(exc)) from exc
         try:
-            handoff_budgets = plan_handoff_budgets(bots, data.prompt, initial)
+            required_notes = [m for m in memories if m["id"] in data.required_memory_ids]
+            handoff_budgets = plan_handoff_budgets(bots, data.prompt, initial, required_notes)
         except ProviderError as exc:
             raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
                    "resume_attempt": 0,
+                   "required_memory_ids": list(dict.fromkeys(data.required_memory_ids)),
+                   "required_memory_revisions": {m["id"]: revision_hash(m) for m in required_notes},
                    "source_revisions": {kind: {item["id"]: revision_hash(item) for item in items}
                                         for kind, items in (("attachment", records), ("connector_evidence", evidence))},
                    "handoff_budgets": handoff_budgets,
@@ -727,6 +745,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         except (ValueError, OSError) as exc:
             raise HTTPException(400, "Review and sync the Obsidian vault before recovery.") from exc
         memories = store.all("memory")
+        for bot in bots:
+            eligible = {m["id"]: revision_hash(m) for m in eligible_memory(memories, bot, cloud)}
+            if any(eligible.get(identifier) != revision for identifier, revision in parent.get("required_memory_revisions", {}).items()):
+                raise HTTPException(409, "Required memory changed or permission was revoked. Start a new mission.")
         # Validate all prior used notes, including failed steps, before any reuse.
         for step in parent["steps"]:
             bot = next(b for b in bots if b["id"] == step["bulter_id"])
