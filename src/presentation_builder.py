@@ -9,6 +9,8 @@ Author: Carter Tan.
 """
 import io
 import re
+import hashlib
+from PIL import Image
 from lxml import etree as ET
 
 from pptx import Presentation
@@ -19,7 +21,8 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from src.attachments import office_paragraphs
 
 
-def compose_presentation(manifest: dict, sources: list[dict], template: bytes | None = None) -> bytes:
+def compose_presentation(manifest: dict, sources: list[dict], template: bytes | None = None,
+                         images: dict[str, dict] | None = None) -> bytes:
     """Build real editable text, flow shapes, timing and provenance speaker notes."""
     if template:
         office_paragraphs(template, 'template.pptx')  # Validate package safety before reuse.
@@ -57,6 +60,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         """Scale the composition grid to the retained template dimensions."""
         return Inches(x * x_scale), Inches(y * y_scale), Inches(width * x_scale), Inches(height * y_scale)
     source_names = {source['source_id']: f"S{index + 1}: {source['title']}" for index, source in enumerate(sources)}
+    images = images or {}
 
     def textbox(slide, x: float, y: float, width: float, height: float, text: str, size: int, color: str) -> None:
         """Add editable text with explicit typography and no automatic shrink."""
@@ -71,9 +75,13 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
 
     for index, item in enumerate(manifest['slides']):
         flow = item.get('flow_steps', [])
-        if any(re.search(r'\{\{[^}]+\}\}', value) for value in [item['title'], item['body'], item['speaker_notes'], *flow]):
+        image_id = item.get('image_id')
+        caption = item.get('image_caption', '')
+        if image_id and (image_id not in images or flow or not caption.strip() or len(caption) > 120):
+            raise ValueError('Picture slides require a selected image, a caption up to 120 characters and no flow diagram on the same slide.')
+        if any(re.search(r'\{\{[^}]+\}\}', value) for value in [item['title'], item['body'], item['speaker_notes'], caption, *flow]):
             raise ValueError('Resolve template placeholders before composing the presentation.')
-        if len(item['title']) > 90 or len(item['body']) > (420 if flow else 700):
+        if len(item['title']) > 90 or len(item['body']) > (420 if flow or image_id else 700):
             raise ValueError('Slide text exceeds the standard layout budget. Shorten the title or body; nothing was omitted.')
         if flow and (not 2 <= len(flow) <= 5 or any(not value.strip() or len(value) > 50 for value in flow)):
             raise ValueError('A flow diagram needs two to five labels of at most 50 characters.')
@@ -88,7 +96,23 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         header.fill.fore_color.rgb = RGBColor.from_string(navy)
         header.line.fill.background()
         textbox(slide, .65, .2, 12, .9, item['title'], 28, 'FFFFFF')
-        textbox(slide, .7, 1.65, 5.4 if flow else 11.8, 4.5, item['body'], 22, ink)
+        textbox(slide, .7, 1.65, 5.4 if flow or image_id else 11.8, 4.5, item['body'], 22, ink)
+        image_note = ''
+        if image_id:
+            asset = images[image_id]
+            with Image.open(io.BytesIO(asset['bytes'])) as photo:
+                width, height = photo.size
+                if photo.format != 'JPEG' or width * height > 20_000_000:
+                    raise ValueError('Composition requires normalized JPEG attachments within image limits.')
+            left, top, box_width, box_height = bounds(7, 1.55, 5.4, 3.8)
+            scale = min(box_width / width, box_height / height)
+            drawn_width, drawn_height = int(width * scale), int(height * scale)
+            slide.shapes.add_picture(io.BytesIO(asset['bytes']), left + (box_width - drawn_width) // 2,
+                                    top + (box_height - drawn_height) // 2, drawn_width, drawn_height)
+            textbox(slide, 7, 5.45, 5.4, .65, caption, 14, ink)
+            image_note = (f"\nImage attachment: {image_id} | {asset['filename']}"
+                          f"\nNormalized image SHA-256: {hashlib.sha256(asset['bytes']).hexdigest()}"
+                          '\nImage origin: user-selected upload; rights and factual interpretation not verified.')
         for position, label in enumerate(flow):
             y = 1.55 + position * .9
             node = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, *bounds(7, y, 5.4, .65))
@@ -112,7 +136,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         textbox(slide, .7, 7.05, 11.8, .3, f"{index + 1} / {len(manifest['slides'])}   |   {item['duration_seconds']} seconds   |   Draft — validation pending", 10, ink)
         provenance = '\n'.join(f"{citation['source_id']}: {citation['quote']}" for claim in item.get('claims', []) for citation in claim['evidence'])
         slide.notes_slide.notes_text_frame.text = (item['speaker_notes'] + f"\nSpeaking time: {item['duration_seconds']} seconds."
-            + f"\nPresentation discussion: {manifest['discussion_seconds']} seconds (once, not per slide).\nSource evidence:\n" + provenance)
+            + f"\nPresentation discussion: {manifest['discussion_seconds']} seconds (once, not per slide).\nSource evidence:\n" + provenance + image_note)
     output = io.BytesIO()
     deck.save(output)
     return output.getvalue()

@@ -432,7 +432,8 @@ def test_office_recovery_and_revision_preserve_artifact_lineage(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("use_template", [False, True])
-def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Path, monkeypatch, use_template: bool) -> None:
+@pytest.mark.parametrize("use_picture", [False, True, "omitted"])
+def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Path, monkeypatch, use_template: bool, use_picture: bool | str) -> None:
     """The app produces and reviews actual slide bytes, not a prose description."""
     import hashlib
     from pptx.enum.shapes import MSO_SHAPE
@@ -447,6 +448,8 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
         calls.append(messages)
         if len(calls) == 1:
             assert 'flow_steps' in messages[0]['content']
+            if use_picture == 'omitted':
+                manifest['slides'] = manifest['slides'][:1]
             yield json.dumps(manifest)
         else:
             refs = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
@@ -455,6 +458,9 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
             yield json.dumps({'draft_hash': hashlib.sha256(projection.encode()).hexdigest(), 'criteria': [
                 {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'The flow includes consent', 'evidence_quotes': ['Holder consents']}]})
 
+    async def fake_vision(bots):
+        return None
+    monkeypatch.setattr('src.app.require_vision', fake_vision)
     monkeypatch.setattr('src.app.generate', stream)
     app = create_app(tmp_path / 'composed.sqlite3')
     with TestClient(app) as client:
@@ -464,18 +470,43 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
         if use_template:
             uploaded = client.post('/api/attachments?filename=design.pptx', content=office('pptx', 'Obsolete sample')).json()
             template_options = {'attachment_ids': [uploaded['id']], 'template_id': uploaded['id']}
+        if use_picture:
+            photo = io.BytesIO()
+            Image.new('RGB', (400, 200), 'blue').save(photo, format='PNG')
+            uploaded_photo = client.post('/api/attachments?filename=synthetic.png', content=photo.getvalue()).json()
+            template_options.setdefault('attachment_ids', []).append(uploaded_photo['id'])
+            template_options['require_picture'] = True
+            manifest['slides'].append({'slide_id': 'slide-2', 'title': 'Illustration', 'body': 'Synthetic test image',
+                'speaker_notes': 'Illustration only', 'duration_seconds': 60, 'image_id': uploaded_photo['id'],
+                'image_caption': 'Synthetic illustration'})
         response = client.post('/api/missions', json={**template_options, 'prompt': 'Explain wallet issuance with a flow diagram',
             'bulter_ids': [b['id'] for b in bots], 'duration_budget_seconds': 1800,
             'review_criteria': ['Include holder consent'], 'compose_presentation': True})
         assert response.status_code == 200
         mission = wait_mission(client)
+        if use_picture == 'omitted':
+            assert mission['status'] == 'failed' and len(calls) == 1
+            assert not mission.get('artifact_id')
+            return
         assert mission['status'] == 'completed' and len(calls) == 2
         assert mission['acceptance_status'] == 'not_assessed'
         exported = client.get(f"/api/missions/{mission['id']}/export/pptx")
         assert exported.status_code == 200
         assert hashlib.sha256(exported.content).hexdigest() == mission['artifact_sha256']
         deck = Presentation(io.BytesIO(exported.content))
-        assert len(deck.slides) == 1
+        assert len(deck.slides) == (2 if use_picture else 1)
+        if use_picture:
+            pictures = [shape for shape in deck.slides[1].shapes if shape.shape_type == 13]
+            assert len(pictures) == 1
+            picture = pictures[0]
+            assert picture.width / picture.height == pytest.approx(2, abs=.00001)
+            normalized = base64.b64decode(app.state.store.get('attachment', uploaded_photo['id'])['image'])
+            assert picture.image.blob == normalized
+            digest = hashlib.sha256(normalized).hexdigest()
+            assert digest in deck.slides[1].notes_slide.notes_text_frame.text
+            assert 'Synthetic illustration' in '\n'.join(shape.text for shape in deck.slides[1].shapes if shape.has_text_frame)
+            artifact = app.state.store.get('artifact', mission['artifact_id'])
+            assert artifact['image_assets'][0]['sha256'] == digest
         slide = deck.slides[0]
         types = [shape.auto_shape_type for shape in slide.shapes if shape.shape_type == 1]
         assert types.count(MSO_SHAPE.ROUNDED_RECTANGLE) == 3
@@ -556,5 +587,41 @@ def test_unsupported_template_dimensions_fail_before_inference(tmp_path: Path, m
         response = client.post('/api/missions', json={'prompt': 'Compose', 'bulter_ids': [b['id'] for b in bots],
             'attachment_ids': [uploaded['id']], 'template_id': uploaded['id'], 'review_criteria': ['Check flow'],
             'duration_budget_seconds': 1800, 'compose_presentation': True})
+        assert response.status_code == 400
+        generate_mock.assert_not_called()
+
+
+@pytest.mark.parametrize('problem', ['unknown', 'flow', 'caption', 'not_jpeg'])
+def test_picture_composition_rejects_invalid_assets(problem: str) -> None:
+    """Only selected normalized assets with a dedicated captioned layout are usable."""
+    from src.presentation_builder import compose_presentation
+    photo = io.BytesIO()
+    Image.new('RGB', (40, 20), 'blue').save(photo, format='PNG' if problem == 'not_jpeg' else 'JPEG')
+    slide = {'title': 'Picture', 'body': 'Illustration', 'speaker_notes': 'Test', 'duration_seconds': 60,
+             'image_id': 'selected', 'image_caption': 'Synthetic image'}
+    assets = {'selected': {'bytes': photo.getvalue(), 'filename': 'synthetic.jpg'}}
+    if problem == 'unknown':
+        slide['image_id'] = 'https://example.com/unselected.jpg'
+    elif problem == 'flow':
+        slide['flow_steps'] = ['Consent', 'Issue']
+    elif problem == 'caption':
+        slide['image_caption'] = ''
+    with pytest.raises(ValueError):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [], images=assets)
+
+
+def test_required_picture_missing_upload_rejected_before_inference(tmp_path: Path, monkeypatch) -> None:
+    """A required picture cannot be promised without a selected uploaded asset."""
+    from src.tests.test_app import add_bot
+    from unittest.mock import Mock
+    generate_mock = Mock()
+    monkeypatch.setattr('src.app.generate', generate_mock)
+    app = create_app(tmp_path / 'missing-picture.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Compose', 'bulter_ids': [b['id'] for b in bots],
+            'review_criteria': ['Check flow'], 'duration_budget_seconds': 1800,
+            'compose_presentation': True, 'require_picture': True})
         assert response.status_code == 400
         generate_mock.assert_not_called()

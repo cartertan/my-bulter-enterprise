@@ -164,6 +164,7 @@ function renderTeam() {
   $('#cloud-consent-row').hidden = !useCloud;
   $('#cloud-consent').required = useCloud;
   $('#egress-note').textContent = useCloud ? 'Local-only notes will be excluded from ALL steps of this mission, including local steps. Provider keys and model access must be configured.' : 'This mission uses local providers only. No automatic cloud fallback.';
+  $('#require-picture-row').hidden = !state.capabilities?.picture_composition;
   $('#compose-presentation-row').hidden = !state.capabilities?.presentation_composition;
   $('#source-citations-row').hidden = !state.capabilities?.source_citations;
   $('#timing-input-row').hidden = !state.capabilities?.timing_validation;
@@ -446,13 +447,14 @@ $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
     const partialReview = state.capabilities?.partial_output_review && $('#review-partial-output').checked ? {review_partial_output: true} : {};
+    const pictures = state.capabilities?.picture_composition && $('#require-picture').checked ? {require_picture: true} : {};
     const composition = state.capabilities?.presentation_composition && $('#compose-presentation').checked ? {compose_presentation: true} : {};
     const sourceCitations = state.capabilities?.source_citations && $('#require-source-citations').checked ? {require_source_citations: true} : {};
     const timing = state.capabilities?.timing_validation && $('#duration-budget').value ? {duration_budget_seconds: Number($('#duration-budget').value) * 60} : {};
     const reviewCriteria = state.capabilities?.structured_review ? {review_criteria: $('#review-criteria').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
-    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...sourceCitations, ...composition, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...sourceCitations, ...composition, ...pictures, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();
     selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }

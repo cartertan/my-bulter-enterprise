@@ -191,3 +191,12 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - This is theme/master reuse, not reproduction of arbitrary slide-specific artwork or exact source arrangements. The UI states that limit. Source slide content is not silently copied into the new presentation.
 - Validation: 265 tests pass, JavaScript syntax and 75-file package gates pass. Synthetic tests verify custom theme color/font adoption, unchanged theme/master bytes, retained dimensions, replacement of sample slides, full two-agent composition/export and portrait rejection before inference.
 - Pending: real template render/fidelity checks, pictures and provenance, rendered readability/clipping validation, browser/real-model evaluation and bounded online research. Final user review remains deferred.
+
+
+### ART-002 uploaded picture composition: 2 November 2026
+
+- Composed decks can embed selected normalized image attachments in dedicated picture slides with captions and aspect-preserving placement. Editable flow diagrams remain required on separate slides. An optional requirement rejects missing uploads before inference and missing picture output before review.
+- The app records attachment identity, filename and normalized-image SHA-256 in speaker notes and private artifact metadata. The exported file remains bound to the reviewed artifact hash. Existing local vision and attachment-sharing restrictions still apply.
+- No remote image URL is fetched, no new dependency is added, and no rights or factual-interpretation approval is inferred from an uploaded image. Unknown image IDs, missing captions, mixed diagram/picture panels and non-normalized assets fail validation.
+- Validation: 274 tests pass, all three JavaScript syntax checks and the 75-file source packaging gate pass. Synthetic integration tests inspect actual embedded bytes, captions, aspect ratio, provenance, exact downloads and required-picture failure before reviewer execution, with and without templates.
+- Remaining: rendered readability/clipping and actual template fidelity, browser/real-model end-to-end evaluation, bounded online research and final user acceptance. Package/text review does not constitute visual acceptance.

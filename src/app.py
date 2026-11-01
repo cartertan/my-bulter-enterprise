@@ -96,6 +96,7 @@ class MissionInput(StrictInput):
     duration_budget_seconds: int | None = Field(default=None, strict=True, ge=60, le=14400)
     require_source_citations: bool = False
     compose_presentation: bool = False
+    require_picture: bool = False
     telegram_notify: bool = False
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     attachment_cloud_consent: bool = False
@@ -121,6 +122,8 @@ class MissionInput(StrictInput):
             raise ValueError("Source citation validation currently requires a timed structured presentation outline.")
         if self.compose_presentation and self.duration_budget_seconds is None:
             raise ValueError("Slide composition requires a timed structured outline.")
+        if self.require_picture and not self.compose_presentation:
+            raise ValueError("Required pictures need PowerPoint composition enabled.")
         return self
 
     @field_validator("sections", "review_criteria")
@@ -199,6 +202,17 @@ class TimedSlide(StrictInput):
     duration_seconds: int = Field(strict=True, ge=1, le=3600)
     claims: list[SourcedClaim] = Field(default_factory=list, max_length=12)
     flow_steps: list[str] = Field(default_factory=list, max_length=5)
+    image_id: str | None = Field(default=None, min_length=1, max_length=100)
+    image_caption: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def picture_scope(self):
+        """Keep image placement explicit and separate from the diagram panel."""
+        if self.image_id and (self.flow_steps or not self.image_caption):
+            raise ValueError("Picture slides need a caption and no flow_steps on the same slide.")
+        if self.image_caption and not self.image_id:
+            raise ValueError("A picture caption requires an image_id.")
+        return self
 
     @field_validator("flow_steps")
     @classmethod
@@ -643,7 +657,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -796,6 +810,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
                     if mission.get("compose_presentation") and bot_index == 0:
                         prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Use the composition layout; an uploaded template supplies theme and masters, not sample content.'
+                        prompt += '\nFor picture slides use image_id from the selected image attachments and image_caption (1–120 characters), body <=420 characters, and no flow_steps on that same slide. Never invent image IDs or remote image URLs.'
+                        if mission.get("require_picture"):
+                            prompt += '\nAt least one slide must include a selected picture, in addition to the required flow diagram.'
                     if author and author.get("timing_check"):
                         prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
                     if author and author.get("source_check"):
@@ -862,9 +879,14 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                                 outline = TimedPresentation.model_validate(json.loads(step["output"], object_pairs_hook=unique_json_fields))
                                 if not any(slide.flow_steps for slide in outline.slides):
                                     raise ValueError("The presentation needs at least one explicit flow diagram.")
+                                if mission.get("require_picture") and not any(slide.image_id for slide in outline.slides):
+                                    raise ValueError("The presentation requires at least one selected picture.")
                                 composition_template = store.get("attachment", mission["template_id"]) if mission.get("template_id") else None
                                 template_bytes = base64.b64decode(composition_template["raw"]) if composition_template else None
-                                artifact_bytes = compose_presentation(outline.model_dump(), mission.get("source_register", []), template_bytes)
+                                image_assets = {item["id"]: {"bytes": base64.b64decode(store.get("attachment", item["id"])["image"], validate=True),
+                                                            "filename": item["filename"]}
+                                                for item in mission.get("attachments", []) if item["kind"] == "image"}
+                                artifact_bytes = compose_presentation(outline.model_dump(), mission.get("source_register", []), template_bytes, image_assets)
                                 filename, source_revision = "presentation.pptx", revision_hash(mission["source_revisions"])
                             else:
                                 template = store.get("attachment", mission["template_id"])
@@ -885,6 +907,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                                     "format": Path(filename).suffix.lower()[1:],
                                     "source_revision": source_revision,
                                     "raw": base64.b64encode(artifact_bytes).decode(), "review_text": handoff_output}
+                        if mission.get("compose_presentation"):
+                            artifact["image_assets"] = [{"attachment_id": identifier, "filename": image_assets[identifier]["filename"],
+                                "sha256": hashlib.sha256(image_assets[identifier]["bytes"]).hexdigest()}
+                                for identifier in sorted({slide.image_id for slide in outline.slides if slide.image_id})]
                         store.put("artifact", artifact)
                         mission.update(artifact_id=artifact["id"], artifact_sha256=artifact_hash, artifact_format=artifact["format"],
                                        artifact_validation="package_and_text_only; render review pending")
@@ -956,6 +982,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             raise HTTPException(400, "Explicitly approve sharing these attachments with cloud providers.")
         if any(item["kind"] == "image" for item in records):
             await require_vision(bots)
+        if data.require_picture and not any(item["kind"] == "image" for item in records):
+            raise HTTPException(400, "Upload and select an image before requiring a picture in the presentation.")
         attachments = [public_attachment(item) for item in records]
         if data.attachment_mode != "reference" and not data.template_id:
             raise HTTPException(400, "Choose an Office source for this output mode.")
@@ -1033,6 +1061,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                    "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "duration_budget_seconds": data.duration_budget_seconds, "section_budgets": section_budgets,
                    "source_register": register, "require_source_citations": data.require_source_citations,
                    "compose_presentation": data.compose_presentation,
+                   "require_picture": data.require_picture,
                    "planned_calls": len(bots) * max(1, len(data.sections)),
                    "required_memory_ids": list(dict.fromkeys(data.required_memory_ids)),
                    "required_memory_revisions": {m["id"]: revision_hash(m) for m in required_notes},
