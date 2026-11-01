@@ -567,3 +567,74 @@ def test_reviewer_cannot_override_failed_timing(tmp_path: Path) -> None:
         assert mission['steps'][1]['review']['state'] == 'needs_revision'
         assert mission['steps'][1]['review']['blocking_checks'] == ['presentation_timing']
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('eventual_pass', [True, False])
+def test_bounded_revision_preserves_history_and_rechecks_new_draft(tmp_path: Path, eventual_pass: bool) -> None:
+    """Each explicit revision runs both agents, binds new text and stops at its cap."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'revisions.sqlite3')
+    calls = []
+    drafts = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return distinct drafts and controlled reviewer verdicts."""
+        calls.append(messages[0]['content'])
+        if len(calls) % 2:
+            if drafts:
+                assert drafts[-1] in calls[-1]
+                assert 'Produce a complete replacement draft' in calls[-1]
+            drafts.append(f'Draft {len(drafts) + 1}: explicit consent')
+            yield drafts[-1]
+        else:
+            verdict = 'pass' if eventual_pass and len(drafts) > 1 else 'fail'
+            yield json.dumps({'draft_hash': draft_hash(drafts[-1]), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': verdict, 'reason': 'Synthetic finding', 'evidence_quotes': ['explicit consent']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        assert client.post('/api/missions', json={'prompt': 'Draft and review', 'bulter_ids': [b['id'] for b in bots],
+            'review_criteria': ['Include consent']}).status_code == 200
+        original = wait_mission(client)
+        assert original['status'] == 'completed_with_issues'
+        assert client.post(f"/api/missions/{original['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['revision_round'] == 1 and len(calls) == 4
+        assert child['steps'][1]['review']['draft_hash'] == draft_hash(drafts[-1])
+        assert child['steps'][1]['review']['draft_hash'] != original['steps'][1]['review']['draft_hash']
+        assert child['acceptance_status'] == 'not_assessed'
+        assert app.state.store.get('mission', original['id']) == original
+        assert client.post(f"/api/missions/{original['id']}/revise", json={}).status_code == 409
+        if eventual_pass:
+            assert child['status'] == 'completed'
+            assert client.post(f"/api/missions/{child['id']}/revise", json={}).status_code == 409
+        else:
+            assert client.post(f"/api/missions/{child['id']}/revise", json={}).status_code == 200
+            final = wait_mission(client)
+            assert final['revision_round'] == 2 and final['status'] == 'completed_with_issues'
+            assert client.post(f"/api/missions/{final['id']}/revise", json={}).status_code == 409
+            assert len(calls) == 6
+
+
+@pytest.mark.parametrize('blocker', ['cloud_consent', 'oversized_feedback', 'changed_source'])
+def test_revision_blocks_before_calls_on_policy_or_budget_failure(tmp_path: Path, blocker: str) -> None:
+    """Explicit revision cannot bypass consent, source validation or context limits."""
+    app = create_app(tmp_path / 'revision-policy.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        parent = failed_review(client, app)
+        parent.update(status='completed_with_issues', review_criteria=['Review consent'])
+        if blocker == 'cloud_consent':
+            parent['cloud'] = True
+        elif blocker == 'oversized_feedback':
+            parent['steps'][0]['output'] = 'x' * 24000
+        else:
+            parent['source_revisions']['connector_evidence'] = {'missing': 'old-hash'}
+        app.state.store.put('mission', parent)
+        with patch('src.app.generate') as generate_mock:
+            response = client.post(f"/api/missions/{parent['id']}/revise", json={})
+            assert response.status_code == (409 if blocker == 'changed_source' else 400)
+            generate_mock.assert_not_called()
+            assert len(app.state.store.all('mission')) == 1

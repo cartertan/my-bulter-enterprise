@@ -141,3 +141,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 
 - Carter's intervention is deferred until the end. Complete remaining implementation and all feasible independent checks first; consolidate presentation, test evidence and limitations into one final review package.
 - Code or security review still required by a work item is an independent validation task, not a reason to pause the rest of the backlog. Escalate early only for a genuine dependency on user input or new authorization.
+
+### REV-002 bounded draft revision: 1 November 2026
+
+- Added an explicit **Revise draft and review again** action for unresolved whole-draft structured reviews. It creates a linked child attempt, reruns both agents and supplies complete prior draft/review feedback as untrusted reference data. Prior attempts remain intact and new assessments bind the new draft hash.
+- Reuses recovery's source, memory, agent and cloud-consent validation. Full feedback must fit preflight; oversized feedback is rejected without truncation or provider calls. Duplicate child attempts are blocked.
+- At most two revision rounds are permitted, within the existing three-attempt recovery ceiling. A passing assessment stops revisions; disagreement remains visibly unresolved. User acceptance is never inferred. There is no automatic retry or paid loop.
+- Validation: 231 tests pass, JavaScript syntax and 74-file packaging gates pass. New tests cover full author/reviewer reruns, new-draft hash binding, immutable history, duplicate requests, stop-on-pass, revision cap, missing cloud consent, changed sources and oversized feedback.
+- Pending: browser validation, real-model evaluation, per-section revision, artifact assembly/verification and any separately consented automatic revision orchestration. Carter's final review remains deferred until independent work is complete.

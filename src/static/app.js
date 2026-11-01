@@ -236,7 +236,22 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
-  head.append(button('Export JSON', 'secondary', () => {
+  if (state.capabilities?.draft_revision && mission.status === 'completed_with_issues'
+      && mission.review_criteria?.length && !mission.sections?.length && mission.steps.length === 2
+      && (mission.revision_round || 0) < 2 && (mission.resume_attempt || 0) < 3
+      && !state.missions.some(m => m.parent_mission_id === mission.id)) {
+    head.append(button('Revise draft and review again', 'secondary', async () => {
+      const message = mission.cloud
+        ? 'Run the author and reviewer again with the complete prior draft and feedback? This sends the task, attachments, eligible notes and outputs to cloud providers and may incur charges.'
+        : 'Run the local author and reviewer again using the prior draft and feedback? The original attempt is preserved. At most two revision rounds are allowed.';
+      if (!window.confirm(message)) return;
+      try {
+        const child = await api(`missions/${mission.id}/revise`, 'POST', {cloud_consent: Boolean(mission.cloud), attachment_cloud_consent: Boolean(mission.cloud)});
+        selectedMission = child.id; await refresh();
+      } catch (error) { notify(error.message); }
+    }));
+  }
+  head.append(button('Export JSON' , 'secondary', () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(mission, null, 2)], {type: 'application/json'}));
     const a = document.createElement('a'); a.href = url; a.download = `bulter-mission-${mission.id}.json`; a.click(); URL.revokeObjectURL(url);
   }));
@@ -252,6 +267,7 @@ function renderDetail() {
     }));
   }
   panel.append(head, el('p', 'brief', mission.prompt));
+  if (mission.revision_round) panel.append(el('p', 'help', `Draft revision round ${mission.revision_round} of 2. User acceptance remains unassessed.`));
   if (mission.parent_mission_id) panel.append(el('p', 'help', `Recovery attempt ${mission.resume_attempt} · original mission ${mission.parent_mission_id}. Completed steps are reused; unfinished steps restart.`));
   panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
   if (mission.sections?.length) {
