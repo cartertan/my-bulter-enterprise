@@ -175,3 +175,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - The registry and claims are included in context reservation, revision feedback and visible mission provenance. Existing attachment/cloud and connector-local-only policies remain in force.
 - Validation: 256 tests pass, JavaScript syntax and 74-file packaging gates pass. Regressions cover invented source IDs/quotes, missing claims, partial/truncated references, empty-source preflight and a false-positive reviewer verdict.
 - Pending: bounded online research and URL provenance, factual/entailment review, visual slide assembly and rendered validation. Issue #8 remains in progress; final acceptance stays deferred.
+
+### ART-002 editable flow-slide composition: 2 November 2026
+
+- Added opt-in standard PowerPoint composition inside the app, using the validated timed outline. It creates real editable text and flow-diagram shapes/arrows, speaker notes, timing footers and selected-source labels. At least one declared flow is required; describing a diagram in prose does not satisfy the mode.
+- Resulting bytes use the same persisted artifact, hash-bound text review and integrity-checked download path as Office edits. Recovery/revision retains artifact lineage. User acceptance remains unassessed and each slide visibly identifies itself as a draft with validation pending.
+- Layout budgets reject oversized titles/body/flow labels, unresolved markers and unknown/oversized citation lists rather than shrinking or deleting content. Full source quotations remain in speaker notes. No additional dependency, external call or standalone substitute presentation was introduced.
+- Validation: 262 tests pass, JavaScript syntax and 75-file packaging checks pass. Integration tests inspect the actual PPTX: editable nodes/arrows, slide count, notes, timing, shape bounds, review hash and byte-exact download. Invalid-content regressions cover layout limits, placeholders and unknown source IDs.
+- Remaining: template-aware styling, pictures with provenance, rendered clipping/readability validation, browser checks, real-model evaluation and bounded online research. Standard composition deliberately rejects uploaded templates; it is not template fidelity or a finished national-wallet presentation.

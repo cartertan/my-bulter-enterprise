@@ -429,3 +429,73 @@ def test_office_recovery_and_revision_preserve_artifact_lineage(tmp_path: Path, 
             if scenario == 'revise_failed_review':
                 assert child['artifact_sha256'] != original['artifact_sha256']
                 assert child['steps'][1]['review']['artifact_sha256'] == child['artifact_sha256']
+
+
+def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Path, monkeypatch) -> None:
+    """The app produces and reviews actual slide bytes, not a prose description."""
+    import hashlib
+    from pptx.enum.shapes import MSO_SHAPE
+    from src.tests.test_app import add_bot, wait_mission
+    manifest = {'slides': [{'slide_id': 'slide-1', 'title': 'Wallet issuance', 'body': 'The holder consents before issuance.',
+        'speaker_notes': 'Explain identity proofing and explicit consent.', 'duration_seconds': 120,
+        'flow_steps': ['Prove identity', 'Holder consents', 'Receive credential']}], 'discussion_seconds': 60}
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Generate a timed manifest and assess the resulting artifact text."""
+        calls.append(messages)
+        if len(calls) == 1:
+            assert 'flow_steps' in messages[0]['content']
+            yield json.dumps(manifest)
+        else:
+            refs = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
+            projection = refs['previous_bulter_outputs'][-1]['output']
+            assert 'Holder consents' in projection
+            yield json.dumps({'draft_hash': hashlib.sha256(projection.encode()).hexdigest(), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'The flow includes consent', 'evidence_quotes': ['Holder consents']}]})
+
+    monkeypatch.setattr('src.app.generate', stream)
+    app = create_app(tmp_path / 'composed.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Explain wallet issuance with a flow diagram',
+            'bulter_ids': [b['id'] for b in bots], 'duration_budget_seconds': 1800,
+            'review_criteria': ['Include holder consent'], 'compose_presentation': True})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == 'completed' and len(calls) == 2
+        assert mission['acceptance_status'] == 'not_assessed'
+        exported = client.get(f"/api/missions/{mission['id']}/export/pptx")
+        assert exported.status_code == 200
+        assert hashlib.sha256(exported.content).hexdigest() == mission['artifact_sha256']
+        deck = Presentation(io.BytesIO(exported.content))
+        assert len(deck.slides) == 1
+        slide = deck.slides[0]
+        types = [shape.auto_shape_type for shape in slide.shapes if shape.shape_type == 1]
+        assert types.count(MSO_SHAPE.ROUNDED_RECTANGLE) == 3
+        assert types.count(MSO_SHAPE.DOWN_ARROW) == 2
+        assert 'Explain identity proofing' in slide.notes_slide.notes_text_frame.text
+        assert 'Presentation discussion: 60 seconds' in slide.notes_slide.notes_text_frame.text
+        assert all(shape.left >= 0 and shape.top >= 0 and shape.left + shape.width <= deck.slide_width
+                   and shape.top + shape.height <= deck.slide_height for shape in slide.shapes)
+
+
+@pytest.mark.parametrize('problem', ['long_title', 'long_body', 'long_flow', 'placeholder', 'unknown_source'])
+def test_composer_rejects_content_it_cannot_place(problem: str) -> None:
+    """Layout budgets reject content instead of silently deleting or shrinking it."""
+    from src.presentation_builder import compose_presentation
+    slide = {'slide_id': 'slide-1', 'title': 'Wallet flow', 'body': 'Consent precedes issuance',
+             'speaker_notes': 'Explain consent', 'duration_seconds': 60, 'flow_steps': ['Consent', 'Issue']}
+    if problem == 'long_title':
+        slide['title'] = 'x' * 91
+    elif problem == 'long_body':
+        slide['body'] = 'x' * 421
+    elif problem == 'long_flow':
+        slide['flow_steps'] = ['x' * 51, 'Issue']
+    elif problem == 'placeholder':
+        slide['body'] = '{{RESPONSE}}'
+    else:
+        slide['claims'] = [{'text': 'Claim', 'evidence': [{'source_id': 'invented', 'quote': 'Quote'}]}]
+    with pytest.raises(ValueError):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [])

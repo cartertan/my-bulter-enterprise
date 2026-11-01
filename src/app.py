@@ -40,6 +40,7 @@ from src.attachment_routes import install_attachment_routes, public_attachment, 
 from src.credentials import Credentials, CredentialError, PROVIDERS as KEY_PROVIDERS
 from src.connectors import Connectors, ConnectorError
 from src.connector_routes import install_connector_routes
+from src.presentation_builder import compose_presentation
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
@@ -94,6 +95,7 @@ class MissionInput(StrictInput):
     review_criteria: list[str] = Field(default_factory=list, max_length=8)
     duration_budget_seconds: int | None = Field(default=None, strict=True, ge=60, le=14400)
     require_source_citations: bool = False
+    compose_presentation: bool = False
     telegram_notify: bool = False
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     attachment_cloud_consent: bool = False
@@ -117,6 +119,8 @@ class MissionInput(StrictInput):
             raise ValueError("Timing validation requires structured review of one whole presentation, without section scopes.")
         if self.require_source_citations and self.duration_budget_seconds is None:
             raise ValueError("Source citation validation currently requires a timed structured presentation outline.")
+        if self.compose_presentation and (self.duration_budget_seconds is None or self.template_id):
+            raise ValueError("Standard slide composition requires a timed structured outline without a template.")
         return self
 
     @field_validator("sections", "review_criteria")
@@ -194,6 +198,15 @@ class TimedSlide(StrictInput):
     speaker_notes: str = Field(max_length=4000)
     duration_seconds: int = Field(strict=True, ge=1, le=3600)
     claims: list[SourcedClaim] = Field(default_factory=list, max_length=12)
+    flow_steps: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("flow_steps")
+    @classmethod
+    def validate_flow(cls, values: list[str]) -> list[str]:
+        """Keep editable diagram labels bounded and meaningful."""
+        if values and (len(values) < 2 or any(not value.strip() or len(value) > 50 for value in values)):
+            raise ValueError("Flow diagrams require two to five nonempty labels of at most 50 characters.")
+        return values
 
 
 class TimedPresentation(StrictInput):
@@ -630,7 +643,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -781,6 +794,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         author = {**author, "output": artifact["review_text"]}
                         prompt += "\nReview the resulting Office artifact text, not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
                     prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
+                    if mission.get("compose_presentation") and bot_index == 0:
+                        prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Standard layout only.'
                     if author and author.get("timing_check"):
                         prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
                     if author and author.get("source_check"):
@@ -841,12 +856,21 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if step["status"] != "partial":
                         step["status"] = "completed"
                     handoff_output = step["output"]
-                    if bot_index == 0 and len(bots) == 2 and mission.get("attachment_mode") in {"reuse_design", "edit"}:
-                        template = store.get("attachment", mission["template_id"])
+                    if bot_index == 0 and (mission.get("compose_presentation") or (len(bots) == 2 and mission.get("attachment_mode") in {"reuse_design", "edit"})):
                         try:
-                            artifact_bytes = edited_output(base64.b64decode(template["raw"]), template["filename"],
-                                {"status": "completed", "steps": [step]})
-                            paragraphs = office_paragraphs(artifact_bytes, template["filename"])
+                            if mission.get("compose_presentation"):
+                                outline = TimedPresentation.model_validate(json.loads(step["output"], object_pairs_hook=unique_json_fields))
+                                if not any(slide.flow_steps for slide in outline.slides):
+                                    raise ValueError("The presentation needs at least one explicit flow diagram.")
+                                artifact_bytes = compose_presentation(outline.model_dump(), mission.get("source_register", []))
+                                filename, source_revision = "presentation.pptx", revision_hash(mission["source_revisions"])
+                            else:
+                                template = store.get("attachment", mission["template_id"])
+                                artifact_bytes = edited_output(base64.b64decode(template["raw"]), template["filename"],
+                                    {"status": "completed", "steps": [step]})
+                                filename = template["filename"]
+                                source_revision = mission["source_revisions"]["attachment"][template["id"]]
+                            paragraphs = office_paragraphs(artifact_bytes, filename)
                             artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
                             handoff_output = json.dumps({"artifact_sha256": artifact_hash, "paragraphs": paragraphs}, ensure_ascii=False)
                             if bounded_output(handoff_output, mission["handoff_budgets"][0])[1]:
@@ -856,11 +880,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             step["status"] = "failed"
                             raise ProviderError(str(exc)) from exc
                         artifact = {"id": str(uuid4()), "mission_id": mission["id"], "sha256": artifact_hash,
-                                    "format": Path(template["filename"]).suffix.lower()[1:],
-                                    "source_revision": mission["source_revisions"]["attachment"][template["id"]],
+                                    "format": Path(filename).suffix.lower()[1:],
+                                    "source_revision": source_revision,
                                     "raw": base64.b64encode(artifact_bytes).decode(), "review_text": handoff_output}
                         store.put("artifact", artifact)
-                        mission.update(artifact_id=artifact["id"], artifact_sha256=artifact_hash,
+                        mission.update(artifact_id=artifact["id"], artifact_sha256=artifact_hash, artifact_format=artifact["format"],
                                        artifact_validation="package_and_text_only; render review pending")
                     if bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         step["timing_check"] = validate_timing(step["output"], mission["duration_budget_seconds"], step["status"] == "completed")
@@ -989,6 +1013,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 planned_prompt = criteria_prompt(planned_prompt, data.review_criteria, "0" * 64)
                 if data.attachment_mode in {"reuse_design", "edit"} and len(bots) == 2:
                     planned_prompt += "x" * 1024  # Reserve Office editing/review guidance added at execution.
+                if data.compose_presentation:
+                    planned_prompt += "x" * 1024  # Reserve diagram authoring and artifact-review guidance.
                 # Reserve more than the bounded timing report and its heading before inference.
                 if data.duration_budget_seconds is not None:
                     planned_prompt += "x" * 1024
@@ -999,6 +1025,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
                    "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "duration_budget_seconds": data.duration_budget_seconds, "section_budgets": section_budgets,
                    "source_register": register, "require_source_citations": data.require_source_citations,
+                   "compose_presentation": data.compose_presentation,
                    "planned_calls": len(bots) * max(1, len(data.sections)),
                    "required_memory_ids": list(dict.fromkeys(data.required_memory_ids)),
                    "required_memory_revisions": {m["id"]: revision_hash(m) for m in required_notes},
@@ -1111,6 +1138,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 prompt += "x" * 1024
             if office_review:
                 prompt += "x" * 1024  # Reserve author edit instructions and artifact-review guidance.
+            if parent.get("compose_presentation"):
+                prompt += "x" * 1024
             required_notes = [m for m in memories if m["id"] in parent.get("required_memory_ids", [])]
             try:
                 budgets = plan_handoff_budgets(bots, prompt, references, required_notes)
@@ -1118,7 +1147,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 raise HTTPException(400, "The complete revision feedback does not fit. Start a smaller-scoped mission; no content was omitted.") from exc
             child.update(steps=[], revision_feedback=feedback, revision_round=parent.get("revision_round", 0) + 1,
                          handoff_budgets=budgets, section_budgets=[budgets])
-            for key in ("artifact_id", "artifact_sha256", "artifact_validation"):
+            for key in ("artifact_id", "artifact_sha256", "artifact_validation", "artifact_format"):
                 child.pop(key, None)
         elif retained_artifact:
             # Recovery reuses exact bytes, with a new ownership record for the child attempt.
