@@ -638,3 +638,79 @@ def test_revision_blocks_before_calls_on_policy_or_budget_failure(tmp_path: Path
             assert response.status_code == (409 if blocker == 'changed_source' else 400)
             generate_mock.assert_not_called()
             assert len(app.state.store.all('mission')) == 1
+
+
+@pytest.mark.parametrize('variant', ['valid', 'unknown_source', 'invented_quote', 'missing_claims', 'partial', 'truncated'])
+def test_source_reference_validation_is_evidence_bound(variant: str) -> None:
+    """Source IDs and quotes must exist; passing references never assert truth."""
+    import json
+    from src.app import validate_sources
+    outline = timed_outline(120, 30)
+    claim = {'text': 'The issuer obtains consent', 'evidence': [{'source_id': 'source-1', 'quote': 'explicit consent'}]}
+    outline['slides'][0]['claims'] = [claim]
+    sources = [{'id': 'source-1', 'content': 'Issuance requires explicit consent.', 'truncated': variant == 'truncated'}]
+    if variant == 'unknown_source':
+        claim['evidence'][0]['source_id'] = 'fabricated'
+    elif variant == 'invented_quote':
+        claim['evidence'][0]['quote'] = 'Invented statement'
+    elif variant == 'missing_claims':
+        outline['slides'][0]['claims'] = []
+    check = validate_sources(json.dumps(outline), [], sources, variant != 'partial')
+    assert check['state'] == ('references_valid' if variant == 'valid' else 'invalid')
+    assert check['factual_accuracy'] == 'not_assessed'
+
+
+def test_fabricated_source_blocks_model_pass(tmp_path: Path) -> None:
+    """A passing reviewer cannot override an invented author source identifier."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'sources.sqlite3')
+    outline = timed_outline(120, 30)
+    outline['slides'][0]['claims'] = [{'text': 'Consent is required',
+        'evidence': [{'source_id': 'invented-source', 'quote': 'explicit consent'}]}]
+    draft = json.dumps(outline)
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Reproduce the original hallucinated-reference failure with synthetic inputs."""
+        calls.append(messages[0]['content'])
+        assert 'SOURCE REGISTER' in calls[-1]
+        if len(calls) == 1:
+            yield draft
+        else:
+            assert 'SOURCE REFERENCE CHECK' in calls[-1]
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': 'pass', 'reason': 'Model overlooked the fabricated source', 'evidence_quotes': ['Consent is required']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        source = client.post('/api/attachments?filename=source.txt', content=b'Issuance requires explicit consent.').json()
+        response = client.post('/api/missions', json={'prompt': 'Prepare a sourced presentation',
+            'bulter_ids': [b['id'] for b in bots], 'attachment_ids': [source['id']],
+            'duration_budget_seconds': 1800, 'review_criteria': ['Use supported claims'], 'require_source_citations': True})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['source_register'][0]['source_id'] == source['id']
+        assert mission['source_register'][0]['content_sha256'] == draft_hash('Issuance requires explicit consent.')
+        assert mission['steps'][0]['source_check']['state'] == 'invalid'
+        assert mission['steps'][1]['review']['blocking_checks'] == ['source_references']
+        assert mission['steps'][1]['review']['state'] == 'needs_revision'
+        assert mission['status'] == 'completed_with_issues'
+        assert mission['acceptance_status'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('truncated', [False, True])
+def test_citation_mode_requires_complete_sources_before_calls(tmp_path: Path, truncated: bool) -> None:
+    """Empty selection and truncated connector snapshots reject before inference."""
+    app = create_app(tmp_path / 'source-preflight.sqlite3')
+    with TestClient(app) as client, patch('src.app.generate') as generate_mock:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        if truncated:
+            app.state.store.put('connector_evidence', {'id': 'source', 'content': 'incomplete', 'truncated': True})
+        response = client.post('/api/missions', json={'prompt': 'Prepare a sourced presentation',
+            'bulter_ids': [b['id'] for b in bots], 'evidence_ids': ['source'] if truncated else [],
+            'duration_budget_seconds': 1800, 'review_criteria': ['Use supported claims'], 'require_source_citations': True})
+        assert response.status_code == 400
+        generate_mock.assert_not_called()

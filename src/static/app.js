@@ -164,6 +164,7 @@ function renderTeam() {
   $('#cloud-consent-row').hidden = !useCloud;
   $('#cloud-consent').required = useCloud;
   $('#egress-note').textContent = useCloud ? 'Local-only notes will be excluded from ALL steps of this mission, including local steps. Provider keys and model access must be configured.' : 'This mission uses local providers only. No automatic cloud fallback.';
+  $('#source-citations-row').hidden = !state.capabilities?.source_citations;
   $('#timing-input-row').hidden = !state.capabilities?.timing_validation;
   $('#review-criteria-row').hidden = !state.capabilities?.structured_review;
   $('#section-input-row').hidden = !state.capabilities?.section_checkpoints;
@@ -278,6 +279,7 @@ function renderDetail() {
     }
   }
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
+  for (const source of mission.source_register || []) panel.append(el('p', 'help', `Source ${source.source_id}: ${source.title} · ${source.origin} · recorded ${source.recorded_at || 'date unavailable'} · SHA-256 ${source.content_sha256}`));
   renderMissionAttachments(mission, panel);
   if (mission.error) panel.append(el('p', 'error', mission.error));
   for (const [index, step] of mission.steps.entries()) {
@@ -286,6 +288,7 @@ function renderDetail() {
     title.append(el('strong', '', `${index + 1}. ${step.section_scope ? step.section_id + ' · ' : ''}${step.name}`), el('small', '', `${labels[step.provider]} / ${step.model}`), el('span', `badge ${step.status === 'partial' ? 'cloud' : ''}`, missionStatusLabel(step.status)));
     block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes`));
     for (const note of step.memory_provenance || []) block.append(el('p', 'help', `${note.title} · ${note.category} · ${note.source_path || 'Local memory'} · SHA-256 ${note.revision}`));
+    if (step.source_check) block.append(el('p', 'help', `Source references: ${step.source_check.state}. Factual accuracy and claim support remain unassessed.${step.source_check.error ? ' ' + step.source_check.error : ''}`));
     if (step.timing_check) {
       const check = step.timing_check;
       block.append(el('p', 'help', `Timing: ${check.state} · ${check.total_seconds ?? 'unverified'} / ${check.budget_seconds} seconds including discussion`));
@@ -431,11 +434,12 @@ $('#mission-form').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#run-mission').disabled = true;
   try {
     const partialReview = state.capabilities?.partial_output_review && $('#review-partial-output').checked ? {review_partial_output: true} : {};
+    const sourceCitations = state.capabilities?.source_citations && $('#require-source-citations').checked ? {require_source_citations: true} : {};
     const timing = state.capabilities?.timing_validation && $('#duration-budget').value ? {duration_budget_seconds: Number($('#duration-budget').value) * 60} : {};
     const reviewCriteria = state.capabilities?.structured_review ? {review_criteria: $('#review-criteria').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
-    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...sourceCitations, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();
     selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }
