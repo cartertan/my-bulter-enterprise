@@ -661,3 +661,51 @@ def test_composition_four_citations_use_explicit_spacing() -> None:
         assert paragraph.space_after.pt == 0 and paragraph.space_before.pt == 0
         assert paragraph.line_spacing == 1.2
     assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)
+
+
+@pytest.mark.parametrize('failure', ['none', 'hash', 'existing', 'renderer', 'page_count', 'image', 'timeout'])
+def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, monkeypatch, failure: str) -> None:
+    """Partial/stale render evidence never produces a successful report."""
+    import hashlib
+    import subprocess
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from scripts.render_presentation import render_presentation
+    source = tmp_path / 'source.pptx'
+    source.write_bytes(office('pptx', 'Synthetic slide'))
+    output = tmp_path / 'evidence'
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    if failure == 'existing':
+        output.mkdir()
+        (output / 'sentinel').write_text('preserve')
+    monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda name: None if failure == 'renderer' else name)
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs['timeout'] == 120 and kwargs['check'] is True
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 120)
+        if command[0] == 'soffice':
+            (output / 'artifact.pdf').write_bytes(b'%PDF-synthetic fixture')
+        elif failure != 'image':
+            (output / 'slide-1.png').write_bytes(b'\x89PNG\r\n\x1a\nsynthetic fixture')
+    monkeypatch.setattr('scripts.render_presentation.subprocess.run', run)
+    document = MagicMock()
+    document.__enter__.return_value = SimpleNamespace(pages=[] if failure == 'page_count' else [object()])
+    monkeypatch.setattr('scripts.render_presentation.pdfplumber.open', lambda path: document)
+    if failure != 'none':
+        with pytest.raises((ValueError, FileExistsError, subprocess.TimeoutExpired)):
+            render_presentation(source, 'wrong' if failure == 'hash' else digest, output)
+        assert not (output / 'render-report.json').exists()
+        if failure in {'hash', 'existing', 'renderer'}:
+            assert not calls
+        if failure == 'existing':
+            assert (output / 'sentinel').read_text() == 'preserve'
+    else:
+        report = render_presentation(source, digest, output)
+        assert len(calls) == 2
+        assert report['artifact_sha256'] == digest and report['slide_count'] == 1
+        assert report['visual_inspection'] == 'pending' and report['user_acceptance'] == 'not_assessed'
+        assert report['pages'][0]['sha256'] == hashlib.sha256((output / 'slide-1.png').read_bytes()).hexdigest()
+        assert json.loads((output / 'render-report.json').read_text()) == report
+        assert output.stat().st_mode & 0o777 == 0o700

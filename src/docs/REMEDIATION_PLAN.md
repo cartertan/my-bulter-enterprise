@@ -207,3 +207,15 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Text panels and diagram nodes use explicit scaled margins, line spacing and zero paragraph spacing, avoiding inherited template paragraph gaps. CRLF/CR normalize to paragraph breaks without dropping content. Four short citation labels remain supported.
 - Validation: 287 tests pass, all three JavaScript syntax checks and the 75-file package gate pass. Thirteen new regressions cover title/body/diagram/citation overflow for three newline forms and a valid four-reference panel with deterministic spacing.
 - This guard detects explicit-line overflow only. Font-dependent wrapping, long words, overlapping template graphics and overall readability still require actual rendering and inspection; no visual acceptance is claimed. Issues remain open and final user review stays deferred.
+
+### ART-002 reproducible local render evidence: 2 November 2026
+
+- Added `scripts/render_presentation.py`: validates an exported PPTX against its expected artifact SHA-256 and Office package checks, runs local LibreOffice and Poppler, verifies the PDF page count and every slide image, then writes hashes for the PDF and per-slide PNGs into a report.
+- Requires a new private output directory (mode 0700); existing evidence is never overwritten. Missing renderers, stale hashes, timeouts and incomplete output fail without a success report. Reports always leave visual inspection pending and user acceptance unassessed.
+- Usage: `python scripts/render_presentation.py exported.pptx --sha256 ARTIFACT_SHA256 --output NEW_PRIVATE_DIRECTORY`. Local `soffice` and `pdftoppm` are optional system prerequisites for this developer validation tool; no Python dependency was added. It is not yet a browser render/review workflow.
+- Validation: 294 tests pass, three JavaScript syntax checks and the 76-file source package gate pass. Seven regression cases cover success, stale hash, existing directory, missing renderer, wrong page count, missing image and timeout. A real local one-slide synthetic composition rendered successfully; its inspected image displayed the full title, body, three flow nodes/arrows and footer without visible clipping. Font substitution was apparent, so this is not font-fidelity acceptance.
+- Remaining: multi-slide and real-template rendering, clipping/readability inspection of actual mission artifacts, browser/real-model end-to-end evaluation, online research and final user acceptance. Render evidence stays private and is not published with source.
+
+## Warnings
+
+- Rendering invokes installed native Office/PDF tools on validated files. Keep these tools updated and use trusted inputs. Successful rendering or page-count checks do not prove visual fidelity, factual correctness, licensing or acceptance.
