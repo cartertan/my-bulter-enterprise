@@ -107,8 +107,11 @@ class MissionInput(StrictInput):
             raise ValueError("Partial-output review requires at least two Bulters in reference mode.")
         if self.sections and (self.attachment_mode != "reference" or self.template_id):
             raise ValueError("Section missions use reference mode without an export template.")
-        if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode != "reference" or self.template_id):
-            raise ValueError("Structured review requires two Bulters in reference mode without an export template.")
+        if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode == "placeholders"
+                                     or (self.attachment_mode == "reference" and self.template_id)):
+            raise ValueError("Structured review requires two Bulters in reference mode or an Office edit workflow.")
+        if self.duration_budget_seconds is not None and self.attachment_mode != "reference":
+            raise ValueError("Timed outlines currently require reference mode.")
         if self.duration_budget_seconds is not None and (not self.review_criteria or self.sections):
             raise ValueError("Timing validation requires structured review of one whole presentation, without section scopes.")
         return self
@@ -533,9 +536,21 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if not mission:
             raise HTTPException(404, "Mission not found.")
         try:
-            if mission.get("sections") or mission.get("review_criteria"):
+            if mission.get("artifact_id"):
+                artifact = store.get("artifact", mission["artifact_id"])
+                if (mission["status"] != "completed" or not artifact or artifact["format"] != format_name
+                        or artifact.get("mission_id") != mission["id"]):
+                    raise ValueError("A completed review of a matching artifact is required.")
+                data = base64.b64decode(artifact["raw"], validate=True)
+                if hashlib.sha256(data).hexdigest() != mission["artifact_sha256"] or artifact.get("sha256") != mission["artifact_sha256"]:
+                    raise ValueError("Artifact integrity check failed. Do not use this output.")
+                review = mission["steps"][-1].get("review", {})
+                if (review.get("artifact_sha256") != mission["artifact_sha256"] or review.get("state") != "criteria_pass"
+                        or review.get("draft_hash") != draft_hash(artifact["review_text"])):
+                    raise ValueError("The review does not match this artifact revision.")
+            elif mission.get("sections") or mission.get("review_criteria"):
                 raise ValueError("Section drafts and structured reviews require artifact assembly before Office export. Export JSON to inspect all checkpoints.")
-            if use_template:
+            elif use_template:
                 attachment = store.get("attachment", mission.get("template_id", ""))
                 if not attachment or Path(attachment["filename"]).suffix.lower() != "." + format_name:
                     raise ValueError("Select a matching Office template when creating this mission.")
@@ -553,7 +568,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -699,6 +714,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         prompt += "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
                     criteria = mission.get("review_criteria", [])
                     author = mission["steps"][work_index - 1] if bot_index == 1 else None
+                    if author and mission.get("artifact_id"):
+                        artifact = store.get("artifact", mission["artifact_id"])
+                        author = {**author, "output": artifact["review_text"]}
+                        prompt += "\nReview the resulting Office artifact text, not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
                     prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
                     if author and author.get("timing_check"):
                         prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
@@ -722,7 +741,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     mission["steps"].append(step)
                     store.put("mission", mission)
                     system, messages = build_context(bot, notes, prompt, handoffs)
-                    if mission.get("attachment_mode") in {"reuse_design", "edit"}:
+                    if mission.get("attachment_mode") in {"reuse_design", "edit"} and bot_index == 0:
                         system += '\nThis is an Office text-edit task. Return only a JSON object {"replacements":[{"old":"exact full source paragraph","new":"replacement text"}]}. Use unique exact paragraphs from the supplied editable paragraphs. No markdown fences. At most 100 replacements. Preserve facts unless the user asks to change them. No layout or image edits are supported. '
                         system += ("Create new content requested by the user within the source layout; replace obsolete sample wording." if mission["attachment_mode"] == "reuse_design" else "Change only the paragraphs needed for the requested edits; preserve other content.")
                     images = [store.get("attachment", item["id"])["image"] for item in mission.get("attachments", []) if item["kind"] == "image"]
@@ -753,10 +772,32 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         raise ProviderError("The model returned no text. Choose a chat-capable model.")
                     if step["status"] != "partial":
                         step["status"] = "completed"
+                    handoff_output = step["output"]
+                    if bot_index == 0 and len(bots) == 2 and mission.get("attachment_mode") in {"reuse_design", "edit"}:
+                        template = store.get("attachment", mission["template_id"])
+                        try:
+                            artifact_bytes = edited_output(base64.b64decode(template["raw"]), template["filename"],
+                                {"status": "completed", "steps": [step]})
+                            paragraphs = office_paragraphs(artifact_bytes, template["filename"])
+                            artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
+                            handoff_output = json.dumps({"artifact_sha256": artifact_hash, "paragraphs": paragraphs}, ensure_ascii=False)
+                            if bounded_output(handoff_output, mission["handoff_budgets"][0])[1]:
+                                raise ValueError("The complete resulting artifact text exceeds reserved review space.")
+                        except ValueError as exc:
+                            raise ProviderError(str(exc)) from exc
+                        artifact = {"id": str(uuid4()), "mission_id": mission["id"], "sha256": artifact_hash,
+                                    "format": Path(template["filename"]).suffix.lower()[1:],
+                                    "source_revision": mission["source_revisions"]["attachment"][template["id"]],
+                                    "raw": base64.b64encode(artifact_bytes).decode(), "review_text": handoff_output}
+                        store.put("artifact", artifact)
+                        mission.update(artifact_id=artifact["id"], artifact_sha256=artifact_hash,
+                                       artifact_validation="package_and_text_only; render review pending")
                     if bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         step["timing_check"] = validate_timing(step["output"], mission["duration_budget_seconds"], step["status"] == "completed")
                     if criteria and author:
                         step["review"] = validate_draft_review(step["output"], author, criteria, bot["id"])
+                        if mission.get("artifact_sha256"):
+                            step["review"]["artifact_sha256"] = mission["artifact_sha256"]
                         if step["status"] != "completed":
                             step["review"]["state"] = "invalid"
                         if author.get("timing_check", {}).get("state") in {"invalid", "exceeded"}:
@@ -764,7 +805,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             if step["review"]["state"] == "criteria_pass":
                                 step["review"]["state"] = "needs_revision"
                         step["review_state"] = step["review"]["state"]
-                    handoffs.append({"name": bot["name"], "output": step["output"], "status": step["status"]})
+                    handoffs.append({"name": bot["name"], "output": handoff_output, "status": step["status"]})
                     store.put("mission", mission)
             mission["status"] = "completed_with_issues" if any(s["status"] == "partial" or s.get("review_state") in {"invalid", "needs_revision"} or s.get("timing_check", {}).get("state") in {"invalid", "exceeded"} for s in mission["steps"]) else "completed"
             if mission["status"] == "completed_with_issues":
@@ -816,8 +857,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         attachments = [public_attachment(item) for item in records]
         if data.attachment_mode != "reference" and not data.template_id:
             raise HTTPException(400, "Choose an Office source for this output mode.")
-        if data.attachment_mode in {"reuse_design", "edit"} and len(bots) != 1:
-            raise HTTPException(400, "Use one Bulter for precise Office text edits.")
+        if data.attachment_mode in {"reuse_design", "edit"} and len(bots) != 1 and not (len(bots) == 2 and data.review_criteria):
+            raise HTTPException(400, "Use one Bulter for text edits, or two with explicit structured review criteria.")
         if data.template_id:
             template = next((item for item in records if item["id"] == data.template_id), None)
             if not template or Path(template["filename"]).suffix.lower() not in {".docx", ".pptx"}:
@@ -866,6 +907,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             for scope in (data.sections or [""]):
                 planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True)
                 planned_prompt = criteria_prompt(planned_prompt, data.review_criteria, "0" * 64)
+                if data.attachment_mode in {"reuse_design", "edit"} and len(bots) == 2:
+                    planned_prompt += "x" * 1024  # Reserve Office editing/review guidance added at execution.
                 # Reserve more than the bounded timing report and its heading before inference.
                 if data.duration_budget_seconds is not None:
                     planned_prompt += "x" * 1024

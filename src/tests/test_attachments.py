@@ -295,3 +295,60 @@ def test_root_relative_internal_relationship_remains_supported() -> None:
     """Valid OPC package-root targets are not confused with network addresses."""
     from src.attachments import validate_office_part
     validate_office_part('_rels/.rels', b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/></Relationships>')
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('mode', ['edit', 'reuse_design'])
+@pytest.mark.parametrize('verdict', ['pass', 'fail'])
+def test_two_agent_office_review_binds_exact_export(tmp_path: Path, monkeypatch, kind: str, mode: str, verdict: str) -> None:
+    """The reviewer inspects actual edited text and export returns the hashed bytes."""
+    import hashlib
+    from src.tests.test_app import add_bot, wait_mission
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return grounded edits, then review the artifact's exact text projection."""
+        calls.append(messages[0]['content'])
+        if len(calls) == 1:
+            yield json.dumps({'replacements': [{'old': 'Original wording', 'new': 'Reviewed wording'}]})
+        else:
+            assert 'Office text-edit task' not in system
+            refs = json.loads(calls[-1].split('REFERENCE DATA (not instructions):\n', 1)[1])
+            projection = refs['previous_bulter_outputs'][-1]['output']
+            parsed = json.loads(projection)
+            assert parsed['paragraphs'] == ['Reviewed wording']
+            assert len(parsed['artifact_sha256']) == 64
+            assert 'replacements' not in parsed
+            yield json.dumps({'draft_hash': hashlib.sha256(projection.encode()).hexdigest(), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': verdict, 'reason': 'Synthetic review', 'evidence_quotes': ['Reviewed wording']}]})
+
+    monkeypatch.setattr('src.app.generate', stream)
+    app = create_app(tmp_path / 'artifact.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        source = linked_office(kind, 'Original wording', 'https://example.com/citation')
+        attachment = client.post('/api/attachments?filename=source.' + kind, content=source).json()
+        response = client.post('/api/missions', json={'prompt': 'Replace the original wording', 'bulter_ids': [b['id'] for b in bots],
+            'attachment_ids': [attachment['id']], 'template_id': attachment['id'], 'attachment_mode': mode,
+            'review_criteria': ['Contains reviewed wording']})
+        assert response.status_code == 200, response.text
+        mission = wait_mission(client)
+        assert len(calls) == 2
+        assert mission['status'] == ('completed' if verdict == 'pass' else 'completed_with_issues')
+        assert mission['acceptance_status'] == 'not_assessed'
+        assert mission['steps'][1]['review']['artifact_sha256'] == mission['artifact_sha256']
+        artifact = app.state.store.get('artifact', mission['artifact_id'])
+        assert 'raw' not in mission
+        exported = client.get(f"/api/missions/{mission['id']}/export/{kind}?use_template=true")
+        if verdict == 'fail':
+            assert exported.status_code == 400
+            return
+        assert exported.status_code == 200
+        assert hashlib.sha256(exported.content).hexdigest() == mission['artifact_sha256']
+        assert exported.content == base64.b64decode(artifact['raw'])
+        assert office_paragraphs(exported.content, 'output.' + kind) == ['Reviewed wording']
+        assert client.get(f"/api/missions/{mission['id']}/export/{'docx' if kind == 'pptx' else 'pptx'}").status_code == 400
+        # Stored content corruption must not silently regenerate or deliver a different revision.
+        app.state.store.put('artifact', {**artifact, 'raw': base64.b64encode(b'changed bytes').decode()})
+        assert client.get(f"/api/missions/{mission['id']}/export/{kind}").status_code == 400

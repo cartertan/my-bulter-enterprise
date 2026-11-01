@@ -54,3 +54,9 @@ Placeholder templates must contain `{{RESPONSE}}` in a paragraph or slide text b
 - Template preflight and exports preserve structurally validated HTTPS hyperlinks without opening their targets. Links must use DNS-style hosts and the default HTTPS port; credentials, local/IP targets and malformed URLs are rejected.
 - Other external relationships, embedded objects and active content remain unsupported. Unsafe Office edit sources fail before model generation.
 - Citation preservation does not verify a publisher, claim or URL destination. Review citations and rendered output before sharing a deliverable. HTTP and non-HTTPS link schemes are not supported by this exception.
+
+## Two-agent Office text review
+
+- Select two Bulters, an Office source in edit/design-reuse mode, and explicit structured review criteria. The author proposes exact paragraph replacements; the reviewer assesses text extracted from the resulting file.
+- The app retains the generated file and binds the review to its SHA-256. Only passing structured assessments permit downloading those exact bytes. User acceptance is separate.
+- This workflow preserves existing layout/assets but does not add pictures, diagrams or new slides. Rendered-layout inspection and Office revision/recovery remain pending. Long resulting text must fit the complete review budget.
