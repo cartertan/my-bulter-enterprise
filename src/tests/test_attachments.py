@@ -663,7 +663,7 @@ def test_composition_four_citations_use_explicit_spacing() -> None:
     assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)
 
 
-@pytest.mark.parametrize('failure', ['none', 'hash', 'existing', 'renderer', 'page_count', 'image', 'timeout'])
+@pytest.mark.parametrize('failure', ['none', 'hash', 'existing', 'renderer', 'page_count', 'image', 'corrupt_image', 'timeout'])
 def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, monkeypatch, failure: str) -> None:
     """Partial/stale render evidence never produces a successful report."""
     import hashlib
@@ -688,13 +688,15 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         if command[0] == 'soffice':
             (output / 'artifact.pdf').write_bytes(b'%PDF-synthetic fixture')
         elif failure != 'image':
-            (output / 'slide-1.png').write_bytes(b'\x89PNG\r\n\x1a\nsynthetic fixture')
+            image = io.BytesIO()
+            Image.new('RGB', (40, 20), 'blue').save(image, format='PNG')
+            (output / 'slide-1.png').write_bytes(b'\x89PNG\r\n\x1a\ncorrupt' if failure == 'corrupt_image' else image.getvalue())
     monkeypatch.setattr('scripts.render_presentation.subprocess.run', run)
     document = MagicMock()
-    document.__enter__.return_value = SimpleNamespace(pages=[] if failure == 'page_count' else [object()])
+    document.__enter__.return_value = SimpleNamespace(pages=[] if failure == 'page_count' else [SimpleNamespace(extract_text=lambda: 'Synthetic slide')])
     monkeypatch.setattr('scripts.render_presentation.pdfplumber.open', lambda path: document)
     if failure != 'none':
-        with pytest.raises((ValueError, FileExistsError, subprocess.TimeoutExpired)):
+        with pytest.raises((ValueError, OSError, subprocess.TimeoutExpired)):
             render_presentation(source, 'wrong' if failure == 'hash' else digest, output)
         assert not (output / 'render-report.json').exists()
         if failure in {'hash', 'existing', 'renderer'}:
@@ -709,3 +711,29 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         assert report['pages'][0]['sha256'] == hashlib.sha256((output / 'slide-1.png').read_bytes()).hexdigest()
         assert json.loads((output / 'render-report.json').read_text()) == report
         assert output.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize('rendered,expected_state', [
+    ('Consent before issuance', 'present'), ('Consent\nbefore  issuance', 'present'),
+    ('Consent before', 'needs_review'), ('', 'needs_review')])
+def test_render_text_presence_detects_missing_fragments(rendered: str, expected_state: str) -> None:
+    """Extraction catches lost words, while harmless line wrapping is normalized."""
+    from scripts.render_presentation import text_presence
+    result = text_presence(['Consent before issuance'], rendered)
+    assert result['state'] == expected_state
+    assert bool(result['missing_fragments']) == (expected_state == 'needs_review')
+
+
+def test_render_text_collection_includes_groups_tables_and_excludes_notes() -> None:
+    """Text hidden in editable groups/tables must also be checked after rendering."""
+    from scripts.render_presentation import slide_text_fragments, text_presence
+    from pptx.util import Inches
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'Grouped text'
+    table = slide.shapes.add_table(1, 1, 0, Inches(2), Inches(2), Inches(1)).table
+    table.cell(0, 0).text = 'Table text'
+    slide.notes_slide.notes_text_frame.text = 'Private speaker notes'
+    assert slide_text_fragments(slide.shapes) == ['Grouped text', 'Table text']
+    assert text_presence([], '')['state'] == 'not_assessed'

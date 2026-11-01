@@ -219,3 +219,10 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 ## Warnings
 
 - Rendering invokes installed native Office/PDF tools on validated files. Keep these tools updated and use trusted inputs. Successful rendering or page-count checks do not prove visual fidelity, factual correctness, licensing or acceptance.
+
+### ART-002 raster integrity and text-presence checks: 2 November 2026
+
+- Render evidence now fully verifies and decodes each PNG instead of accepting its file signature alone. Reports include raster dimensions and per-slide comparisons between editable PPTX text (including groups/tables, excluding notes) and extracted PDF text.
+- Missing text is retained in the private report as `needs_review`; the CLI exits with code 2 while preserving the completed render. Whitespace and Unicode compatibility normalization tolerate ordinary wrapping. Empty-text slides remain unassessed, and neither text presence nor rendering grants visual/user acceptance.
+- Validation: 300 tests pass, three JavaScript syntax checks and the 76-file source package gate pass. Added corrupt-raster rejection, missing-text/whitespace checks and grouped/table text coverage. A real two-slide synthetic diagram/picture deck rendered; both images were inspected with no visible clipping, and the picture/caption were present.
+- The real test correctly surfaced an extraction discrepancy: a PDF CID marker interrupted the first title despite its visible text being complete. The warning remains in the private evidence. Text extraction can produce false alarms and can also include text that is clipped or obscured; it is a review aid, not a visual verdict. Font substitution, actual-template fidelity and end-to-end mission acceptance remain pending.
