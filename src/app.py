@@ -92,6 +92,7 @@ class MissionInput(StrictInput):
     required_memory_ids: list[str] = Field(default_factory=list, max_length=20)
     sections: list[str] = Field(default_factory=list, max_length=6)
     review_criteria: list[str] = Field(default_factory=list, max_length=8)
+    duration_budget_seconds: int | None = Field(default=None, strict=True, ge=60, le=14400)
     telegram_notify: bool = False
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     attachment_cloud_consent: bool = False
@@ -108,6 +109,8 @@ class MissionInput(StrictInput):
             raise ValueError("Section missions use reference mode without an export template.")
         if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode != "reference" or self.template_id):
             raise ValueError("Structured review requires two Bulters in reference mode without an export template.")
+        if self.duration_budget_seconds is not None and (not self.review_criteria or self.sections):
+            raise ValueError("Timing validation requires structured review of one whole presentation, without section scopes.")
         return self
 
     @field_validator("sections", "review_criteria")
@@ -165,6 +168,63 @@ class DraftReview(StrictInput):
     criteria: list[CriterionReview] = Field(min_length=1, max_length=8)
 
 
+class TimedSlide(StrictInput):
+    """Bound one slide's declared speaking time and draft text."""
+    slide_id: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1, max_length=4000)
+    speaker_notes: str = Field(max_length=4000)
+    duration_seconds: int = Field(strict=True, ge=1, le=3600)
+
+
+class TimedPresentation(StrictInput):
+    """Machine-readable timing; an outline is not a generated Office artifact."""
+    slides: list[TimedSlide] = Field(min_length=1, max_length=60)
+    discussion_seconds: int = Field(strict=True, ge=0, le=14400)
+
+
+def unique_json_fields(pairs: list[tuple]) -> dict:
+    """Reject ambiguous JSON key overwrites for both draft and review schemas."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def timing_prompt(prompt: str, budget: int | None, author: bool) -> str:
+    """Request explicit integer timings without estimating them from prose."""
+    if budget is None:
+        return prompt
+    result = prompt + f"\nPresentation timing budget: {budget} seconds INCLUDING discussion."
+    if author:
+        result += ('\nReturn only JSON: {"slides":[{"slide_id":"slide-1","title":"Title",'
+                   '"body":"Slide content","speaker_notes":"Notes","duration_seconds":120}],'
+                   '"discussion_seconds":300}. Use unique slide IDs and integer seconds. '
+                   'Include every planned slide and discussion. This is a draft outline, not a generated artifact.')
+    return result
+
+
+def validate_timing(output: str, budget: int, complete: bool = True) -> dict:
+    """Sum declared slide and discussion seconds deterministically; fail closed."""
+    check = {"state": "invalid", "budget_seconds": budget, "draft_hash": draft_hash(output)}
+    try:
+        if not complete:
+            raise ValueError("Incomplete draft")
+        draft = TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
+        if len({slide.slide_id for slide in draft.slides}) != len(draft.slides):
+            raise ValueError("Duplicate slide ID")
+        speaking = sum(slide.duration_seconds for slide in draft.slides)
+        total = speaking + draft.discussion_seconds
+        check.update(state="pass" if total <= budget else "exceeded", slide_count=len(draft.slides),
+                     speaking_seconds=speaking, discussion_seconds=draft.discussion_seconds,
+                     total_seconds=total, overrun_seconds=max(0, total - budget))
+    except (ValueError, TypeError):
+        check["error"] = "Timing is unverified: provide a complete timed-slide JSON outline with unique IDs and integer seconds."
+    return check
+
+
 def draft_hash(output: str) -> str:
     """Hash exact retained text without normalizing whitespace or encoding."""
     return hashlib.sha256(output.encode()).hexdigest()
@@ -192,15 +252,7 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
               "draft_hash": draft_hash(author["output"]), "section_id": author["section_id"],
               "draft_revision": author["draft_revision"], "state": "invalid", "criteria": []}
     try:
-        def unique_fields(pairs: list[tuple]) -> dict:
-            """Reject duplicate JSON keys instead of accepting a hidden overwrite."""
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("Duplicate review field")
-                result[key] = value
-            return result
-        review = DraftReview.model_validate(json.loads(output, object_pairs_hook=unique_fields))
+        review = DraftReview.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
         expected = {f"criterion-{index + 1}" for index in range(len(criteria))}
         if (review.draft_hash != record["draft_hash"] or len(review.criteria) != len(expected)
                 or {item.criterion_id for item in review.criteria} != expected):
@@ -501,7 +553,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -643,6 +695,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     prompt = section_prompt(mission["prompt"], scope)
                     criteria = mission.get("review_criteria", [])
                     author = mission["steps"][work_index - 1] if bot_index == 1 else None
+                    prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
+                    if author and author.get("timing_check"):
+                        prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
                     prompt = criteria_prompt(prompt, criteria, draft_hash(author["output"]) if author else None)
                     if work_index < len(mission["steps"]):
                         retained = mission["steps"][work_index]
@@ -694,14 +749,20 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         raise ProviderError("The model returned no text. Choose a chat-capable model.")
                     if step["status"] != "partial":
                         step["status"] = "completed"
+                    if bot_index == 0 and mission.get("duration_budget_seconds") is not None:
+                        step["timing_check"] = validate_timing(step["output"], mission["duration_budget_seconds"], step["status"] == "completed")
                     if criteria and author:
                         step["review"] = validate_draft_review(step["output"], author, criteria, bot["id"])
                         if step["status"] != "completed":
                             step["review"]["state"] = "invalid"
+                        if author.get("timing_check", {}).get("state") in {"invalid", "exceeded"}:
+                            step["review"]["blocking_checks"] = ["presentation_timing"]
+                            if step["review"]["state"] == "criteria_pass":
+                                step["review"]["state"] = "needs_revision"
                         step["review_state"] = step["review"]["state"]
                     handoffs.append({"name": bot["name"], "output": step["output"], "status": step["status"]})
                     store.put("mission", mission)
-            mission["status"] = "completed_with_issues" if any(s["status"] == "partial" or s.get("review_state") in {"invalid", "needs_revision"} for s in mission["steps"]) else "completed"
+            mission["status"] = "completed_with_issues" if any(s["status"] == "partial" or s.get("review_state") in {"invalid", "needs_revision"} or s.get("timing_check", {}).get("state") in {"invalid", "exceeded"} for s in mission["steps"]) else "completed"
             if mission["status"] == "completed_with_issues":
                 mission["error"] = "Review finished with incomplete output or unresolved review findings. No accepted deliverable is established."
         except asyncio.CancelledError:
@@ -797,13 +858,19 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 raise HTTPException(400, str(exc)) from exc
         try:
             required_notes = [m for m in memories if m["id"] in data.required_memory_ids]
-            section_budgets = [plan_handoff_budgets(bots, criteria_prompt(section_prompt(data.prompt, scope), data.review_criteria, "0" * 64), initial, required_notes)
-                               for scope in (data.sections or [""])]
+            section_budgets = []
+            for scope in (data.sections or [""]):
+                planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True)
+                planned_prompt = criteria_prompt(planned_prompt, data.review_criteria, "0" * 64)
+                # Reserve more than the bounded timing report and its heading before inference.
+                if data.duration_budget_seconds is not None:
+                    planned_prompt += "x" * 1024
+                section_budgets.append(plan_handoff_budgets(bots, planned_prompt, initial, required_notes))
             handoff_budgets = section_budgets[0]
         except ProviderError as exc:
             raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
-                   "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "section_budgets": section_budgets,
+                   "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "duration_budget_seconds": data.duration_budget_seconds, "section_budgets": section_budgets,
                    "planned_calls": len(bots) * max(1, len(data.sections)),
                    "required_memory_ids": list(dict.fromkeys(data.required_memory_ids)),
                    "required_memory_revisions": {m["id"]: revision_hash(m) for m in required_notes},

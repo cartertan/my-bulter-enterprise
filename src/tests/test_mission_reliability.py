@@ -497,3 +497,73 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         assert record['reviewer_id'] == bots[1]['id'] and record['author_id'] == bots[0]['id']
         assert record['draft_hash'] == draft_hash(draft)
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+
+
+def timed_outline(seconds=1620, discussion=300) -> dict:
+    """Create a synthetic one-slide outline for deterministic timing checks."""
+    return {'slides': [{'slide_id': 'slide-1', 'title': 'Wallet flow', 'body': 'Explicit consent',
+                        'speaker_notes': 'Explain the flow', 'duration_seconds': seconds}],
+            'discussion_seconds': discussion}
+
+
+@pytest.mark.parametrize('seconds,discussion,state,total', [(1620, 300, 'exceeded', 1920),
+    (1500, 300, 'pass', 1800), (1499, 300, 'pass', 1799)])
+def test_timing_uses_integer_arithmetic_including_discussion(seconds: int, discussion: int, state: str, total: int) -> None:
+    """27 plus 5 fails a 30-minute budget, while the exact boundary passes."""
+    import json
+    from src.app import validate_timing
+    check = validate_timing(json.dumps(timed_outline(seconds, discussion)), 1800)
+    assert check['state'] == state and check['total_seconds'] == total
+    assert check['overrun_seconds'] == max(0, total - 1800)
+
+
+@pytest.mark.parametrize('variant', ['boolean', 'float', 'negative', 'string', 'missing', 'duplicate', 'extra_total', 'partial', 'prose'])
+def test_invalid_timing_never_passes(variant: str) -> None:
+    """Missing, coerced and ambiguous timing cannot be treated as zero or trusted totals."""
+    import json
+    from src.app import validate_timing
+    payload = timed_outline()
+    if variant in {'boolean', 'float', 'negative', 'string'}:
+        payload['slides'][0]['duration_seconds'] = {'boolean': True, 'float': 1.5, 'negative': -10, 'string': '120'}[variant]
+    elif variant == 'missing':
+        del payload['discussion_seconds']
+    elif variant == 'duplicate':
+        payload['slides'].append(dict(payload['slides'][0]))
+    elif variant == 'extra_total':
+        payload['total_seconds'] = 1200
+    text = 'This presentation takes 30 minutes' if variant == 'prose' else json.dumps(payload)
+    assert validate_timing(text, 1800, complete=variant != 'partial')['state'] == 'invalid'
+
+
+def test_reviewer_cannot_override_failed_timing(tmp_path: Path) -> None:
+    """A model pass on an overlong outline leaves the run unresolved."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'timing.sqlite3')
+    draft = json.dumps(timed_outline())
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return a false-positive review to exercise the deterministic override."""
+        calls.append(messages[0]['content'])
+        if len(calls) == 1:
+            assert '1800 seconds INCLUDING discussion' in calls[-1]
+            yield draft
+        else:
+            assert '"total_seconds": 1920' in calls[-1]
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': 'pass', 'reason': 'Model incorrectly claims this fits', 'evidence_quotes': ['Explicit consent']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Create a wallet presentation',
+            'bulter_ids': [b['id'] for b in bots], 'review_criteria': ['Fits allotted time'], 'duration_budget_seconds': 1800})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == 'completed_with_issues'
+        assert mission['acceptance_status'] == 'not_assessed'
+        assert mission['steps'][0]['timing_check']['overrun_seconds'] == 120
+        assert mission['steps'][1]['review']['state'] == 'needs_revision'
+        assert mission['steps'][1]['review']['blocking_checks'] == ['presentation_timing']
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400

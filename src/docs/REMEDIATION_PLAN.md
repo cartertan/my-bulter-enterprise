@@ -128,3 +128,16 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - UI exposes structured criteria and recorded findings. Context preflight reserves the review schema and criterion text. No extra retry or revision calls are introduced.
 - Validation: 213 tests pass, JavaScript syntax and 74-file packaging checks pass. Tests cover forged identity, prose agreement, stale hashes, criterion coverage, duplicate keys, invented quotations, incomplete drafts and API status/export boundaries.
 - Pending: deterministic slide timing and artifact-existence checks, artifact-hash binding, bounded revision rounds, browser smoke test and real-model evaluation. Issue #4 remains open and in progress; these are draft assessments, not presentation acceptance.
+
+### REV-002 deterministic timing: 1 November 2026
+
+- Added an optional whole-presentation time budget (1–240 minutes, including discussion), requiring structured review without section scopes. The author supplies bounded JSON slides with IDs, titles, body text, speaker notes and integer speaking seconds plus discussion seconds.
+- The app validates the complete outline and calculates totals in integer seconds. Missing/ambiguous fields, duplicate slide IDs, coerced numbers and incomplete output cannot pass. Model-provided totals are not accepted. The check binds the exact draft hash.
+- Reviewers receive the computed timing report. A model pass cannot override an overrun or invalid timing: the review remains needs_revision, execution completed_with_issues and user acceptance not_assessed. This validates declared timings, not actual delivery speed or a rendered artifact.
+- Validation: 226 tests pass, JavaScript syntax and 74-file packaging checks pass. The original 27 + 5 minute failure reproduces as 1,920 seconds, 120 seconds over a 30-minute budget; exact-boundary, malformed timing and false-positive reviewer regressions pass.
+- Pending: artifact creation/existence/hash verification, bounded revision rounds, browser checks and representative real-model evaluation. The JSON outline is not a finished presentation.
+
+### Final acceptance sequencing
+
+- Carter's intervention is deferred until the end. Complete remaining implementation and all feasible independent checks first; consolidate presentation, test evidence and limitations into one final review package.
+- Code or security review still required by a work item is an independent validation task, not a reason to pause the rest of the backlog. Escalate early only for a genuine dependency on user input or new authorization.
