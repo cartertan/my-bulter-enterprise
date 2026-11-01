@@ -116,6 +116,18 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class ResumeInput(StrictInput):
+    """Fresh consent for explicit provider calls from a retained checkpoint."""
+
+    cloud_consent: bool = False
+    attachment_cloud_consent: bool = False
+
+
+def revision_hash(record: dict) -> str:
+    """Fingerprint a source without copying its private content into provenance."""
+    return hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 def eligible_memory(memories: list[dict], bot: dict, cloud_mission: bool) -> list[dict]:
     """Enforce both bot scope and whole-mission egress policy before prompting."""
     return [m for m in memories if m["active"]
@@ -388,7 +400,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -521,10 +533,15 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             store.put("mission", mission)
             async with asyncio.timeout(600):
                 for bot_index, bot in enumerate(bots):
+                    if bot_index < len(mission["steps"]):
+                        retained = mission["steps"][bot_index]
+                        handoffs.append({"name": retained["name"], "output": retained["output"], "status": "completed"})
+                        continue
                     notes = select_memory(memories, bot, cloud, mission["prompt"], handoffs)
                     step = {"bulter_id": bot["id"], "name": bot["name"], "provider": bot["provider"],
                             "model": bot["model"], "memory_ids": [m["id"] for m in notes], "output": "", "status": "running"}
                     step["memory_selection"] = "local keyword ranking within context limit"
+                    step["memory_revisions"] = {m["id"]: revision_hash(m) for m in notes}
                     step["eligible_memory_count"] = len(eligible_memory(memories, bot, cloud))
                     mission["steps"].append(step)
                     store.put("mission", mission)
@@ -660,6 +677,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         except ProviderError as exc:
             raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
+                   "resume_attempt": 0,
+                   "source_revisions": {kind: {item["id"]: revision_hash(item) for item in items}
+                                        for kind, items in (("attachment", records), ("connector_evidence", evidence))},
                    "handoff_budgets": handoff_budgets,
                    "cloud_consent": data.cloud_consent, "status": "queued", "steps": [], "created": now(), "error": None,
                    "connector_evidence": evidence, "telegram_notify": data.telegram_notify,
@@ -669,6 +689,65 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         store.put("mission", mission)
         tasks[mission["id"]] = asyncio.create_task(execute(mission, bots, memories, cloud))
         return mission
+
+    @app.post("/api/missions/{identifier}/resume")
+    async def resume_mission(identifier: str, data: ResumeInput) -> dict:
+        """Create one immutable child attempt; reuse only fully completed steps.
+
+        Assumes a single app worker. No await occurs between duplicate checking
+        and persistence, so two requests cannot schedule the same checkpoint.
+        """
+        if tasks or credential_lock.locked():
+            raise HTTPException(409, "Wait for the active mission or credential operation.")
+        parent = store.get("mission", identifier)
+        if not parent:
+            raise HTTPException(404, "Mission not found.")
+        if (parent["status"] not in {"failed", "cancelled", "interrupted"}
+                or parent.get("attachment_mode") != "reference" or "source_revisions" not in parent):
+            raise HTTPException(409, "This mission has no supported recovery checkpoint. Start a new mission.")
+        if parent.get("resume_attempt", 0) >= 3:
+            raise HTTPException(409, "Three recovery attempts have been used. Start a new mission.")
+        if any(m.get("parent_mission_id") == identifier for m in store.all("mission")):
+            raise HTTPException(409, "This checkpoint already has a recovery attempt. Open that attempt.")
+        bots, cloud = parent["team"], parent["cloud"]
+        if cloud and (not data.cloud_consent or (parent["attachments"] and not data.attachment_cloud_consent)):
+            raise HTTPException(400, "Renew cloud and attachment sharing consent before recovery.")
+        for bot in bots:
+            if store.get("bulter", bot["id"]) != bot:
+                raise HTTPException(409, "A selected Bulter changed or was removed. Start a new mission.")
+            if is_cloud(bot["provider"]) and not credentials.status(bot["provider"])["configured"]:
+                raise HTTPException(400, "Configure the selected cloud provider before recovery.")
+        for kind, revisions in parent["source_revisions"].items():
+            for source_id, revision in revisions.items():
+                current = store.get(kind, source_id)
+                if current is None or revision_hash(current) != revision:
+                    raise HTTPException(409, "Source evidence changed or is missing. Start a new mission.")
+        try:
+            sync_notes(store, vault)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, "Review and sync the Obsidian vault before recovery.") from exc
+        memories = store.all("memory")
+        # Validate all prior used notes, including failed steps, before any reuse.
+        for step in parent["steps"]:
+            bot = next(b for b in bots if b["id"] == step["bulter_id"])
+            eligible = {m["id"]: revision_hash(m) for m in eligible_memory(memories, bot, cloud)}
+            if any(eligible.get(note_id) != revision for note_id, revision in step["memory_revisions"].items()):
+                raise HTTPException(409, "Previously used memory changed or permission was revoked. Start a new mission.")
+        retained = []
+        for step in parent["steps"]:
+            if step["status"] != "completed":
+                break
+            retained.append(step)
+        child = {**parent, "id": str(uuid4()), "parent_mission_id": identifier,
+                 "resume_attempt": parent.get("resume_attempt", 0) + 1,
+                 "steps": retained, "status": "queued", "error": None, "created": now(),
+                 "cloud_consent": data.cloud_consent, "attachment_cloud_consent": data.attachment_cloud_consent,
+                 "telegram_notify": False, "acceptance_status": "not_assessed"}
+        child.pop("finished", None)
+        child.pop("telegram_notification", None)
+        store.put("mission", child)
+        tasks[child["id"]] = asyncio.create_task(execute(child, bots, memories, cloud))
+        return child
 
     @app.post("/api/missions/{identifier}/stop")
     async def stop_mission(identifier: str) -> dict:

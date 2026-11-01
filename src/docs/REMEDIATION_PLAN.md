@@ -86,3 +86,12 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Generation exceeding its reserved budget retains a marked incomplete prefix. Review proceeds only with existing explicit partial-review consent; no retry or additional paid request is introduced.
 - Regression coverage uses 12,000-character synthetic evidence, oversized escaped drafts, two/three/four-agent teams, Unicode/control characters and preflight rejection without inference.
 - Pending: immutable per-section revisions, explicit resume, restart/revocation/duplicate-resume tests and a representative real-provider run. REL-002 remains open. This change does not establish presentation acceptance.
+
+### REL-002 recovery progress: 1 November 2026
+
+- Added explicit recovery for failed, cancelled or interrupted reference missions created with source provenance. Completed agent steps are reused; the first unfinished step starts again. Partial text is not silently treated as a completed checkpoint.
+- Each recovery creates a linked child mission. The original attempt and outputs remain intact. Each parent permits one child, with at most three recovery attempts per chain; no automatic retry occurs.
+- Revalidate source hashes, agent configuration and every previously used note after vault sync. Changed or revoked inputs require a new mission. Cloud recovery requires renewed cloud/attachment consent. Recovery does not repeat Telegram notifications.
+- The mission workspace offers **Resume unfinished steps**, explains new provider calls and shows recovery lineage. Legacy missions and Office edit modes do not expose recovery.
+- Automated cases cover failed and crash-interrupted restart recovery, completed-step reuse, duplicate requests, cancellation, source absence, revoked notes, changed agents, missing cloud consent and the retry cap.
+- Remaining: per-section work items and revisions, representative real-model validation and browser validation of the new control. Step-level recovery does not complete REL-002 or establish artifact acceptance.

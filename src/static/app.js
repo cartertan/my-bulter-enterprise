@@ -190,6 +190,23 @@ function renderDetail() {
     try { await api(`missions/${mission.id}/stop`, 'POST'); await refresh(); }
     catch (error) { notify(error.message); }
   }));
+  if (state.capabilities?.checkpoint_resume && mission.source_revisions && mission.attachment_mode === 'reference'
+      && ['failed', 'cancelled', 'interrupted'].includes(mission.status)
+      && (mission.resume_attempt || 0) < 3 && !state.missions.some(m => m.parent_mission_id === mission.id)) {
+    head.append(button('Resume unfinished steps', 'secondary', async () => {
+      const disclosure = mission.cloud
+        ? 'This calls cloud providers again and may incur charges. Approve sending the task, attachments, eligible notes and retained outputs to the selected providers?'
+        : 'Retry unfinished steps using the selected local models? Completed steps are reused; the original attempt is preserved.';
+      if (!window.confirm(disclosure)) return;
+      try {
+        const child = await api(`missions/${mission.id}/resume`, 'POST', {
+          cloud_consent: Boolean(mission.cloud), attachment_cloud_consent: Boolean(mission.cloud)
+        });
+        selectedMission = child.id;
+        await refresh();
+      } catch (error) { notify(error.message); }
+    }));
+  }
   head.append(button('Export JSON', 'secondary', () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(mission, null, 2)], {type: 'application/json'}));
     const a = document.createElement('a'); a.href = url; a.download = `bulter-mission-${mission.id}.json`; a.click(); URL.revokeObjectURL(url);
@@ -206,6 +223,7 @@ function renderDetail() {
     }));
   }
   panel.append(head, el('p', 'brief', mission.prompt));
+  if (mission.parent_mission_id) panel.append(el('p', 'help', `Recovery attempt ${mission.resume_attempt} · original mission ${mission.parent_mission_id}. Completed steps are reused; unfinished steps restart.`));
   panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
   renderMissionAttachments(mission, panel);

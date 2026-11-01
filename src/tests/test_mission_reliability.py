@@ -198,3 +198,118 @@ def test_review_space_rejected_before_inference(tmp_path: Path) -> None:
         assert "review space" in response.json()["detail"]
         generate_mock.assert_not_called()
         assert not app.state.store.all("mission")
+
+
+def failed_review(client: TestClient, app) -> dict:
+    """Create a real persisted checkpoint with one complete and one failed call."""
+    bots = [add_bot(client, "Author"), add_bot(client, "Reviewer")]
+    calls = []
+
+    async def stream(*args, **kwargs):
+        """Fail the reviewer after retaining its partial draft."""
+        calls.append(True)
+        if len(calls) == 1:
+            yield "Completed author evidence"
+        else:
+            yield "Unfinished review"
+            raise ProviderError("Synthetic connection failure")
+
+    with patch("src.app.generate", stream):
+        response = client.post("/api/missions", json={"prompt": "Review evidence", "bulter_ids": [b["id"] for b in bots]})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission["status"] == "failed"
+        return mission
+
+
+@pytest.mark.parametrize("crashed", [False, True])
+def test_resume_after_restart_preserves_history_and_skips_completed(tmp_path: Path, crashed: bool) -> None:
+    """Recovery is durable, explicit and single-use after a process restart."""
+    path = tmp_path / "test.sqlite3"
+    app = create_app(path)
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        original = failed_review(client, app)
+    if crashed:
+        original["status"] = "running"
+        original["steps"][-1]["status"] = "running"
+        app.state.store.put("mission", original)
+    fresh = create_app(path)
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """The resumed reviewer receives the original complete author draft."""
+        calls.append(system)
+        assert "Completed author evidence" in messages[0]["content"]
+        assert "Unfinished review" not in messages[0]["content"]
+        yield "New completed review"
+
+    with TestClient(fresh) as client, patch("src.app.generate", stream):
+        client.headers["x-bulter-token"] = fresh.state.csrf
+        if crashed:
+            original = fresh.state.store.get("mission", original["id"])
+            assert original["status"] == "interrupted"
+        response = client.post(f"/api/missions/{original['id']}/resume", json={})
+        assert response.status_code == 200
+        child = wait_mission(client)
+        assert child["status"] == "completed"
+        assert child["parent_mission_id"] == original["id"]
+        assert child["steps"][0] == original["steps"][0]
+        assert len(calls) == 1
+        assert fresh.state.store.get("mission", original["id"]) == original
+        assert client.post(f"/api/missions/{original['id']}/resume", json={}).status_code == 409
+
+
+@pytest.mark.parametrize("change", ["source", "source_changed", "memory", "memory_changed", "bot", "cloud", "limit"])
+def test_resume_revalidates_policy_before_calls(tmp_path: Path, change: str) -> None:
+    """Stale sources, revoked memory and missing consent cannot be reused."""
+    from src.app import revision_hash
+    app = create_app(tmp_path / "test.sqlite3")
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        parent = failed_review(client, app)
+        if change == "source":
+            parent["source_revisions"]["connector_evidence"] = {"missing": "old"}
+        elif change == "source_changed":
+            parent["source_revisions"]["connector_evidence"] = {"changed": revision_hash({"id": "changed", "text": "original"})}
+            app.state.store.put("connector_evidence", {"id": "changed", "text": "edited"})
+        elif change in {"memory", "memory_changed"}:
+            note = {"id": "revoked", "active": True, "owner_id": parent["team"][0]["id"], "cloud_allowed": False}
+            parent["steps"][0]["memory_revisions"] = {"revoked": revision_hash(note)}
+            app.state.store.put("memory", {**note, "active": change == "memory_changed", "content": "edited"})
+        elif change == "bot":
+            bot = parent["team"][0]
+            app.state.store.put("bulter", {**bot, "instructions": "changed"})
+        elif change == "cloud":
+            parent["cloud"] = True
+        else:
+            parent["resume_attempt"] = 3
+        app.state.store.put("mission", parent)
+        with patch("src.app.generate") as generate_mock:
+            response = client.post(f"/api/missions/{parent['id']}/resume", json={})
+            assert response.status_code == (400 if change == "cloud" else 409)
+            generate_mock.assert_not_called()
+            assert len(app.state.store.all("mission")) == 1
+
+
+def test_cancel_resumed_call_keeps_both_attempts(tmp_path: Path) -> None:
+    """Cancellation during recovery preserves the checkpoint and new partial text."""
+    import asyncio
+    app = create_app(tmp_path / "test.sqlite3")
+
+    async def stream(*args, **kwargs):
+        """Keep the resumed provider open until cancelled."""
+        yield "New partial review"
+        await asyncio.Event().wait()
+
+    with TestClient(app) as client:
+        client.headers["x-bulter-token"] = app.state.csrf
+        parent = failed_review(client, app)
+        with patch("src.app.generate", stream):
+            response = client.post(f"/api/missions/{parent['id']}/resume", json={})
+            assert response.status_code == 200
+            child_id = response.json()["id"]
+            assert client.post(f"/api/missions/{parent['id']}/resume", json={}).status_code == 409
+            stopped = client.post(f"/api/missions/{child_id}/stop").json()
+            assert stopped["status"] == "cancelled"
+            assert app.state.store.get("mission", parent["id"]) == parent
