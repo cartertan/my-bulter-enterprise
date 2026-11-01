@@ -200,3 +200,10 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - No remote image URL is fetched, no new dependency is added, and no rights or factual-interpretation approval is inferred from an uploaded image. Unknown image IDs, missing captions, mixed diagram/picture panels and non-normalized assets fail validation.
 - Validation: 274 tests pass, all three JavaScript syntax checks and the 75-file source packaging gate pass. Synthetic integration tests inspect actual embedded bytes, captions, aspect ratio, provenance, exact downloads and required-picture failure before reviewer execution, with and without templates.
 - Remaining: rendered readability/clipping and actual template fidelity, browser/real-model end-to-end evaluation, bounded online research and final user acceptance. Package/text review does not constitute visual acceptance.
+
+### ART-002 explicit line overflow guard: 2 November 2026
+
+- Fixed a layout hole: text within character limits could contain many short lines and overflow a slide panel. Composition now rejects explicit line counts exceeding panel height at the configured font and line spacing, including CRLF and PowerPoint soft breaks.
+- Text panels and diagram nodes use explicit scaled margins, line spacing and zero paragraph spacing, avoiding inherited template paragraph gaps. CRLF/CR normalize to paragraph breaks without dropping content. Four short citation labels remain supported.
+- Validation: 287 tests pass, all three JavaScript syntax checks and the 75-file package gate pass. Thirteen new regressions cover title/body/diagram/citation overflow for three newline forms and a valid four-reference panel with deterministic spacing.
+- This guard detects explicit-line overflow only. Font-dependent wrapping, long words, overlapping template graphics and overall readability still require actual rendering and inspection; no visual acceptance is claimed. Issues remain open and final user review stays deferred.

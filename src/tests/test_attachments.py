@@ -625,3 +625,39 @@ def test_required_picture_missing_upload_rejected_before_inference(tmp_path: Pat
             'compose_presentation': True, 'require_picture': True})
         assert response.status_code == 400
         generate_mock.assert_not_called()
+
+
+@pytest.mark.parametrize('field', ['title', 'body', 'flow', 'citation'])
+@pytest.mark.parametrize('separator', ['\n', '\r\n', '\v'])
+def test_composition_rejects_explicit_line_overflow(field: str, separator: str) -> None:
+    """Short text can overflow vertically even within the character budget."""
+    from src.presentation_builder import compose_presentation
+    slide = {'title': 'Wallet', 'body': 'Consent', 'speaker_notes': 'Test', 'duration_seconds': 60,
+             'flow_steps': ['Consent', 'Issue']}
+    sources = []
+    overflow = separator.join(['x'] * 20)
+    if field in {'title', 'body'}:
+        slide[field] = overflow
+    elif field == 'flow':
+        slide['flow_steps'] = [separator.join(['x'] * 3), 'Issue']
+    else:
+        sources = [{'source_id': 'source-1', 'title': overflow}]
+        slide['claims'] = [{'evidence': [{'source_id': 'source-1', 'quote': 'Evidence'}]}]
+    with pytest.raises(ValueError, match='Explicit text lines'):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0}, sources)
+
+
+def test_composition_four_citations_use_explicit_spacing() -> None:
+    """All four allowed references fit the panel without inherited paragraph spacing."""
+    from src.presentation_builder import compose_presentation
+    sources = [{'source_id': f'source-{i}', 'title': f'Reference {i}'} for i in range(4)]
+    slide = {'title': 'Wallet', 'body': 'Consent\r\nIssue', 'speaker_notes': 'Test', 'duration_seconds': 60,
+             'flow_steps': ['Consent', 'Issue'], 'claims': [{'evidence': [
+                 {'source_id': source['source_id'], 'quote': 'Evidence'} for source in sources]}]}
+    deck = Presentation(io.BytesIO(compose_presentation({'slides': [slide], 'discussion_seconds': 0}, sources)))
+    labels = [shape for shape in deck.slides[0].shapes if shape.has_text_frame and 'Reference 0' in shape.text]
+    assert len(labels) == 1 and len(labels[0].text_frame.paragraphs) == 4
+    for paragraph in labels[0].text_frame.paragraphs:
+        assert paragraph.space_after.pt == 0 and paragraph.space_before.pt == 0
+        assert paragraph.line_spacing == 1.2
+    assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)

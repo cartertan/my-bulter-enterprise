@@ -62,16 +62,31 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
     source_names = {source['source_id']: f"S{index + 1}: {source['title']}" for index, source in enumerate(sources)}
     images = images or {}
 
+    def configure_text(shape, text: str, size: int, color: str) -> None:
+        """Reject explicit line overflow; wrapping still requires rendered validation."""
+        frame = shape.text_frame
+        frame.word_wrap = True
+        frame.margin_left = frame.margin_right = Inches(.05 * x_scale)
+        frame.margin_top = frame.margin_bottom = Inches(.05 * y_scale)
+        font_points = size * font_scale
+        usable_points = (shape.height - frame.margin_top - frame.margin_bottom) / 12700
+        # Character limits alone permit many short lines that cannot fit vertically.
+        # CRLF is one break; PowerPoint also treats vertical tabs as soft breaks.
+        lines = len(re.split(r"\r\n|[\n\r\v]", text))
+        if lines * font_points * 1.2 > usable_points:
+            raise ValueError('Explicit text lines exceed the slide panel height; shorten or split the content.')
+        frame.text = text.replace('\r\n', '\n').replace('\r', '\n')
+        for paragraph in frame.paragraphs:
+            paragraph.space_before = paragraph.space_after = Pt(0)
+            paragraph.line_spacing = 1.2
+            paragraph.font.name = font_name
+            paragraph.font.size = Pt(font_points)
+            paragraph.font.color.rgb = RGBColor.from_string(color)
+
     def textbox(slide, x: float, y: float, width: float, height: float, text: str, size: int, color: str) -> None:
         """Add editable text with explicit typography and no automatic shrink."""
         box = slide.shapes.add_textbox(*bounds(x, y, width, height))
-        box.text_frame.word_wrap = True
-        box.text_frame.margin_left = box.text_frame.margin_right = Inches(.05)
-        box.text_frame.text = text
-        for paragraph in box.text_frame.paragraphs:
-            paragraph.font.name = font_name
-            paragraph.font.size = Pt(size * font_scale)
-            paragraph.font.color.rgb = RGBColor.from_string(color)
+        configure_text(box, text, size, color)
 
     for index, item in enumerate(manifest['slides']):
         flow = item.get('flow_steps', [])
@@ -119,11 +134,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
             node.fill.solid()
             node.fill.fore_color.rgb = RGBColor.from_string(teal)
             node.line.fill.background()
-            node.text_frame.text = label
-            for paragraph in node.text_frame.paragraphs:
-                paragraph.font.name = font_name
-                paragraph.font.size = Pt(18 * font_scale)
-                paragraph.font.color.rgb = RGBColor(255, 255, 255)
+            configure_text(node, label, 18, 'FFFFFF')
             if position + 1 < len(flow):
                 arrow = slide.shapes.add_shape(MSO_SHAPE.DOWN_ARROW, *bounds(9.45, y + .67, .35, .2))
                 arrow.fill.solid()
