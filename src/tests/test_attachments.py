@@ -431,7 +431,8 @@ def test_office_recovery_and_revision_preserve_artifact_lineage(tmp_path: Path, 
                 assert child['steps'][1]['review']['artifact_sha256'] == child['artifact_sha256']
 
 
-def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("use_template", [False, True])
+def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Path, monkeypatch, use_template: bool) -> None:
     """The app produces and reviews actual slide bytes, not a prose description."""
     import hashlib
     from pptx.enum.shapes import MSO_SHAPE
@@ -459,7 +460,11 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
     with TestClient(app) as client:
         client.headers['x-bulter-token'] = app.state.csrf
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
-        response = client.post('/api/missions', json={'prompt': 'Explain wallet issuance with a flow diagram',
+        template_options = {}
+        if use_template:
+            uploaded = client.post('/api/attachments?filename=design.pptx', content=office('pptx', 'Obsolete sample')).json()
+            template_options = {'attachment_ids': [uploaded['id']], 'template_id': uploaded['id']}
+        response = client.post('/api/missions', json={**template_options, 'prompt': 'Explain wallet issuance with a flow diagram',
             'bulter_ids': [b['id'] for b in bots], 'duration_budget_seconds': 1800,
             'review_criteria': ['Include holder consent'], 'compose_presentation': True})
         assert response.status_code == 200
@@ -499,3 +504,57 @@ def test_composer_rejects_content_it_cannot_place(problem: str) -> None:
         slide['claims'] = [{'text': 'Claim', 'evidence': [{'source_id': 'invented', 'quote': 'Quote'}]}]
     with pytest.raises(ValueError):
         compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [])
+
+
+def test_composition_reuses_theme_dimensions_and_replaces_sample_slides() -> None:
+    """Custom theme bytes persist while generated text and diagram use its styling."""
+    from lxml import etree as ET
+    from src.presentation_builder import compose_presentation
+    source = office('pptx', 'Obsolete sample wording')
+    modified = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as old, zipfile.ZipFile(modified, 'w') as new:
+        for item in old.infolist():
+            content = old.read(item.filename)
+            if item.filename == 'ppt/theme/theme1.xml':
+                root = ET.fromstring(content)
+                ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+                root.xpath('./a:themeElements/a:clrScheme/a:accent1/a:srgbClr', namespaces=ns)[0].set('val', 'AD2556')
+                root.xpath('./a:themeElements/a:fontScheme/a:minorFont/a:latin', namespaces=ns)[0].set('typeface', 'Arial')
+                content = ET.tostring(root)
+            new.writestr(item, content)
+    manifest = {'slides': [{'title': 'New presentation', 'body': 'New facts', 'speaker_notes': 'New notes',
+        'duration_seconds': 120, 'flow_steps': ['Consent', 'Issue']}], 'discussion_seconds': 60}
+    result = compose_presentation(manifest, [], modified.getvalue())
+    original = Presentation(io.BytesIO(modified.getvalue()))
+    deck = Presentation(io.BytesIO(result))
+    assert (deck.slide_width, deck.slide_height) == (original.slide_width, original.slide_height)
+    assert len(deck.slides) == 1
+    assert 'Obsolete sample wording' not in '\n'.join(office_paragraphs(result, 'output.pptx'))
+    nodes = [shape for shape in deck.slides[0].shapes if shape.has_text_frame and shape.text == 'Consent']
+    assert str(nodes[0].fill.fore_color.rgb) == 'AD2556'
+    assert nodes[0].text_frame.paragraphs[0].font.name == 'Arial'
+    with zipfile.ZipFile(io.BytesIO(modified.getvalue())) as old, zipfile.ZipFile(io.BytesIO(result)) as new:
+        assert old.read('ppt/theme/theme1.xml') == new.read('ppt/theme/theme1.xml')
+        assert old.read('ppt/slideMasters/slideMaster1.xml') == new.read('ppt/slideMasters/slideMaster1.xml')
+
+
+def test_unsupported_template_dimensions_fail_before_inference(tmp_path: Path, monkeypatch) -> None:
+    """Portrait designs are explicitly unsupported instead of silently distorted."""
+    from src.tests.test_app import add_bot
+    from unittest.mock import Mock
+    from pptx.util import Inches
+    document = Presentation(io.BytesIO(office('pptx', 'Portrait sample')))
+    document.slide_width, document.slide_height = Inches(7.5), Inches(10)
+    source = io.BytesIO(); document.save(source)
+    generate_mock = Mock()
+    monkeypatch.setattr('src.app.generate', generate_mock)
+    app = create_app(tmp_path / 'portrait.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        uploaded = client.post('/api/attachments?filename=portrait.pptx', content=source.getvalue()).json()
+        response = client.post('/api/missions', json={'prompt': 'Compose', 'bulter_ids': [b['id'] for b in bots],
+            'attachment_ids': [uploaded['id']], 'template_id': uploaded['id'], 'review_criteria': ['Check flow'],
+            'duration_budget_seconds': 1800, 'compose_presentation': True})
+        assert response.status_code == 400
+        generate_mock.assert_not_called()

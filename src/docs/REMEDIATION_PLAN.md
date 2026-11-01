@@ -183,3 +183,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Layout budgets reject oversized titles/body/flow labels, unresolved markers and unknown/oversized citation lists rather than shrinking or deleting content. Full source quotations remain in speaker notes. No additional dependency, external call or standalone substitute presentation was introduced.
 - Validation: 262 tests pass, JavaScript syntax and 75-file packaging checks pass. Integration tests inspect the actual PPTX: editable nodes/arrows, slide count, notes, timing, shape bounds, review hash and byte-exact download. Invalid-content regressions cover layout limits, placeholders and unknown source IDs.
 - Remaining: template-aware styling, pictures with provenance, rendered clipping/readability validation, browser checks, real-model evaluation and bounded online research. Standard composition deliberately rejects uploaded templates; it is not template fidelity or a finished national-wallet presentation.
+
+### ART-002 template theme composition: 2 November 2026
+
+- Composition can now take an attached PPTX as an optional design reference. It retains the source theme, masters/layouts and slide dimensions, samples theme colors/fonts, and replaces obsolete sample slides with generated content on the composition grid.
+- Preflight validates Office package safety and supported landscape dimensions before inference. Unsupported portrait/extreme dimensions or non-PPTX designs fail explicitly; no source file is modified.
+- This is theme/master reuse, not reproduction of arbitrary slide-specific artwork or exact source arrangements. The UI states that limit. Source slide content is not silently copied into the new presentation.
+- Validation: 265 tests pass, JavaScript syntax and 75-file package gates pass. Synthetic tests verify custom theme color/font adoption, unchanged theme/master bytes, retained dimensions, replacement of sample slides, full two-agent composition/export and portrait rejection before inference.
+- Pending: real template render/fidelity checks, pictures and provenance, rendered readability/clipping validation, browser/real-model evaluation and bounded online research. Final user review remains deferred.

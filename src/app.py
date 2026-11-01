@@ -111,7 +111,7 @@ class MissionInput(StrictInput):
         if self.sections and (self.attachment_mode != "reference" or self.template_id):
             raise ValueError("Section missions use reference mode without an export template.")
         if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode == "placeholders"
-                                     or (self.attachment_mode == "reference" and self.template_id)):
+                                     or (self.attachment_mode == "reference" and self.template_id and not self.compose_presentation)):
             raise ValueError("Structured review requires two Bulters in reference mode or an Office edit workflow.")
         if self.duration_budget_seconds is not None and self.attachment_mode != "reference":
             raise ValueError("Timed outlines currently require reference mode.")
@@ -119,8 +119,8 @@ class MissionInput(StrictInput):
             raise ValueError("Timing validation requires structured review of one whole presentation, without section scopes.")
         if self.require_source_citations and self.duration_budget_seconds is None:
             raise ValueError("Source citation validation currently requires a timed structured presentation outline.")
-        if self.compose_presentation and (self.duration_budget_seconds is None or self.template_id):
-            raise ValueError("Standard slide composition requires a timed structured outline without a template.")
+        if self.compose_presentation and self.duration_budget_seconds is None:
+            raise ValueError("Slide composition requires a timed structured outline.")
         return self
 
     @field_validator("sections", "review_criteria")
@@ -795,7 +795,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         prompt += "\nReview the resulting Office artifact text, not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
                     prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
                     if mission.get("compose_presentation") and bot_index == 0:
-                        prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Standard layout only.'
+                        prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Use the composition layout; an uploaded template supplies theme and masters, not sample content.'
                     if author and author.get("timing_check"):
                         prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
                     if author and author.get("source_check"):
@@ -862,7 +862,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                                 outline = TimedPresentation.model_validate(json.loads(step["output"], object_pairs_hook=unique_json_fields))
                                 if not any(slide.flow_steps for slide in outline.slides):
                                     raise ValueError("The presentation needs at least one explicit flow diagram.")
-                                artifact_bytes = compose_presentation(outline.model_dump(), mission.get("source_register", []))
+                                composition_template = store.get("attachment", mission["template_id"]) if mission.get("template_id") else None
+                                template_bytes = base64.b64decode(composition_template["raw"]) if composition_template else None
+                                artifact_bytes = compose_presentation(outline.model_dump(), mission.get("source_register", []), template_bytes)
                                 filename, source_revision = "presentation.pptx", revision_hash(mission["source_revisions"])
                             else:
                                 template = store.get("attachment", mission["template_id"])
@@ -964,7 +966,12 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             if not template or Path(template["filename"]).suffix.lower() not in {".docx", ".pptx"}:
                 raise HTTPException(400, "Choose an attached DOCX or PPTX template.")
             try:
-                if data.attachment_mode in {"reuse_design", "edit"}:
+                if data.compose_presentation:
+                    if Path(template["filename"]).suffix.lower() != ".pptx":
+                        raise ValueError("Slide composition requires a PPTX design template.")
+                    preview = {"slides": [{"title": "Preview", "body": "Preview", "speaker_notes": "", "duration_seconds": 1}], "discussion_seconds": 0}
+                    await asyncio.to_thread(compose_presentation, preview, [], base64.b64decode(template["raw"]))
+                elif data.attachment_mode in {"reuse_design", "edit"}:
                     paragraphs = await asyncio.to_thread(office_paragraphs, base64.b64decode(template["raw"]), template["filename"])
                     for item in attachments:
                         if item["id"] == data.template_id:
