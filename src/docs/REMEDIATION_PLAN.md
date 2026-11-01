@@ -13,7 +13,7 @@ Assumptions: one local user, one worker, explicit cloud consent, no automatic pa
 | Order / issue | Priority | Work package and dependencies | Acceptance gate | Status |
 | --- | --- | --- | --- | --- |
 | REL-001 | P0 | Classify output exhaustion; explicit incomplete-draft handoff; preserve partial evidence; distinguish execution from acceptance | Opt-in reviewer receives flagged partial output; default still stops; interrupted runs never become accepted artifacts; provider budgets honoured | Implemented in working tree, automated regression verified |
-| REL-002 | P0 | Context budgeting and resumable per-section generation, after REL-001 | Large synthetic template + draft reaches review without dropping evidence; bounded continuation, cancellation and restart recovery; no automatic paid retry | Next |
+| REL-002 | P0 | Context budgeting and resumable per-section generation, after REL-001 | Large synthetic template + draft reaches review without dropping evidence; bounded continuation, cancellation and restart recovery; no automatic paid retry | In progress: handoff reservation implemented; section checkpoints pending |
 | REV-001 | P0 | Structured per-agent review records and acceptance criteria, after REL-001 | Store agent identity independently of generated headings; parse criterion result/evidence; invalid or missing fields cannot pass; `completed` never implies `accepted` | Planned |
 | REV-002 | P0 | Deterministic checks and bounded author/reviewer revision rounds, after REL-002 and REV-001 | Code totals slide durations and checks artifact existence; two-agent loop stops on acceptance, limits or unresolved disagreement; 27 + 5 fails a 30-minute budget | Planned |
 | MEM-001 | P0 | Explicit mission memory selection and visible provenance | Users can select approved preference notes within existing access policy; demo notes do not silently become personal requirements; selected hashes preserved; oversized selections rejected clearly | Planned, can precede REV-002 |
@@ -33,7 +33,7 @@ Assumptions: one local user, one worker, explicit cloud consent, no automatic pa
 
 Do not promise delivery dates before each package is estimated against a concrete design and test fixture. Each issue should record problem, scope, exclusions, dependencies, acceptance tests and evidence links.
 
-### Next package: REL-002 design and test contract
+### REL-002 design and test contract
 
 - Preflight the source, instructions, selected memories and reserved handoff budget before the first model request. Distinguish the current character guard from a model's token context limit; do not claim character counts are token counts.
 - Introduce a per-section work item with an immutable source revision, section ID, draft revision, provider outcome and review state. Never overwrite a prior draft when revising it.
@@ -75,6 +75,14 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 
 ## Warnings
 
-- Partial review improves recovery, not factual correctness. It does not repair missing content or guarantee that the next step fits the context limit.
+- Partial review improves recovery, not factual correctness. Handoff reservation guards the application character limit, not provider token limits; missing draft content still requires further work.
 - Existing Office template restrictions and lack of autonomous visual composition remain. The original end-to-end presentation scenario is still not ready to pass.
 - Automated secret-pattern checks are a limited guard, not proof that all source or screenshots are safe to publish. Human review remains required.
+
+### REL-002 progress: 1 November 2026
+
+- Implemented preflight reservation for every later reviewer, including four-agent chains. Budgets are persisted with the mission and count JSON escaping rather than raw output length.
+- A source that leaves less than 1,024 characters per prior draft after a 2,048-character optional-note reserve is rejected before inference. Sources are never trimmed. Notes remain selected dynamically within the actual context guard.
+- Generation exceeding its reserved budget retains a marked incomplete prefix. Review proceeds only with existing explicit partial-review consent; no retry or additional paid request is introduced.
+- Regression coverage uses 12,000-character synthetic evidence, oversized escaped drafts, two/three/four-agent teams, Unicode/control characters and preflight rejection without inference.
+- Pending: immutable per-section revisions, explicit resume, restart/revocation/duplicate-resume tests and a representative real-provider run. REL-002 remains open. This change does not establish presentation acceptance.

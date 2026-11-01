@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.app import create_app
+from src.app import bounded_output, create_app
 from src.providers import OutputLimitError, ProviderError, parse_event, request_spec
 from src.tests.test_app import add_bot, wait_mission
 
@@ -51,9 +51,9 @@ def test_output_limit_review_is_explicit(tmp_path: Path, opt_in: bool) -> None:
         assert app.state.store.get("mission", result["id"]) == result
 
 
-@pytest.mark.parametrize("failure", ["network", "empty", "last_step", "context"])
+@pytest.mark.parametrize("failure", ["network", "empty", "last_step"])
 def test_partial_review_does_not_hide_other_failures(tmp_path: Path, failure: str) -> None:
-    """Network, empty output, final-step limits and oversized contexts still fail."""
+    """Network, empty output and final-step limits still fail."""
     app = create_app(tmp_path / "test.sqlite3")
     calls = []
 
@@ -62,7 +62,7 @@ def test_partial_review_does_not_hide_other_failures(tmp_path: Path, failure: st
         calls.append(model)
         if failure == "empty":
             raise OutputLimitError("Output limit reached")
-        yield "x" * 16000 if failure == "context" else "Partial evidence"
+        yield "Partial evidence"
         if failure == "network":
             raise ProviderError("Network failure")
         if failure != "last_step" or len(calls) == 2:
@@ -71,12 +71,7 @@ def test_partial_review_does_not_hide_other_failures(tmp_path: Path, failure: st
     with TestClient(app) as client, patch("src.app.generate", stream):
         client.headers["x-bulter-token"] = app.state.csrf
         bots = [add_bot(client), add_bot(client, "Reviewer")]
-        # The source fits initially; its full retained output cannot fit the next step.
-        if failure == "context":
-            for bot in bots:
-                fields = {k: v for k, v in bot.items() if k not in {"id", "created"}}
-                assert client.put(f"/api/bulters/{bot['id']}", json={**fields, "instructions": "y" * 3000}).status_code == 200
-        client.post("/api/missions", json={"prompt": "z" * 6000 if failure == "context" else "Review",
+        client.post("/api/missions", json={"prompt": "Review",
             "bulter_ids": [b["id"] for b in bots], "review_partial_output": True})
         result = wait_mission(client)
         assert result["status"] == "failed"
@@ -147,3 +142,59 @@ def test_output_configuration_reaches_every_provider(provider: str) -> None:
     _, _, body = request_spec(provider, "synthetic", "system", [], {"output_tokens": 4096}, api_key="synthetic")
     actual = body["options"]["num_predict"] if provider == "ollama" else body["max_output_tokens" if provider == "openai" else "max_tokens"]
     assert actual == 4096
+
+
+@pytest.mark.parametrize("text", ['"' * 20000, "\\" * 20000, "\x00" * 6000, "界🙂" * 12000])
+def test_handoff_budget_counts_json_escaping(text: str) -> None:
+    """Escaped controls cannot overflow reserved reviewer space."""
+    import json
+    retained, exceeded = bounded_output(text, 1234)
+    assert exceeded
+    assert text.startswith(retained)
+    assert len(json.dumps(retained, ensure_ascii=False)) - 2 <= 1234
+    assert len(json.dumps(text[:len(retained) + 1], ensure_ascii=False)) - 2 > 1234
+
+
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_large_reference_reaches_every_reviewer(tmp_path: Path, count: int) -> None:
+    """A 12k reference and long escaped drafts retain all sources in every call."""
+    app = create_app(tmp_path / "test.sqlite3")
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Force author limits, then return a bounded final review."""
+        calls.append(messages[0]["content"])
+        assert len(system) + len(messages[0]["content"]) <= 24000
+        assert "SOURCE_START" in calls[-1] and "SOURCE_END" in calls[-1]
+        yield ('"\\\n' * 10000) if len(calls) < count else "Missing content prevents acceptance."
+
+    with TestClient(app) as client, patch("src.app.generate", stream):
+        client.headers["x-bulter-token"] = app.state.csrf
+        bots = [add_bot(client, f"Agent {index}") for index in range(count)]
+        # Connector snapshots exercise the same immutable reference handoff path.
+        app.state.store.put("connector_evidence", {"id": "source", "text": "SOURCE_START" + "x" * 12000 + "SOURCE_END"})
+        response = client.post("/api/missions", json={"prompt": "Review all source evidence",
+            "bulter_ids": [bot["id"] for bot in bots], "evidence_ids": ["source"],
+            "review_partial_output": True})
+        assert response.status_code == 200
+        result = wait_mission(client)
+        assert len(calls) == count
+        assert result["status"] == "completed_with_issues"
+        assert all(step["status"] == "partial" for step in result["steps"][:-1])
+        assert result["steps"][-1]["status"] == "completed"
+        assert result["acceptance_status"] == "not_assessed"
+
+
+def test_review_space_rejected_before_inference(tmp_path: Path) -> None:
+    """Insufficient review capacity cannot consume a provider call."""
+    app = create_app(tmp_path / "test.sqlite3")
+    with TestClient(app) as client, patch("src.app.generate") as generate_mock:
+        client.headers["x-bulter-token"] = app.state.csrf
+        bots = [add_bot(client, str(index)) for index in range(4)]
+        app.state.store.put("connector_evidence", {"id": "source", "text": "x" * 19000})
+        response = client.post("/api/missions", json={"prompt": "Review",
+            "bulter_ids": [bot["id"] for bot in bots], "evidence_ids": ["source"]})
+        assert response.status_code == 400
+        assert "review space" in response.json()["detail"]
+        generate_mock.assert_not_called()
+        assert not app.state.store.all("mission")

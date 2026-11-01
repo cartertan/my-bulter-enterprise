@@ -145,6 +145,43 @@ def build_context(bot: dict, memories: list[dict], prompt: str, handoffs: list[d
     return system, [{"role": "user", "content": content}]
 
 
+def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict]) -> list[int]:
+    """Reserve serialized draft space for every later reviewer before inference.
+
+    This is a character guard, not a provider token estimate. Reserve 2,048
+    characters for optional notes; never remove source evidence to fit drafts.
+    """
+    budgets = [16000] * len(bots)
+    for index, bot in enumerate(bots):
+        placeholders = [{"name": previous["name"], "output": "", "status": "partial"}
+                        for previous in bots[:index]]
+        system, messages = build_context(bot, [], prompt, references + placeholders)
+        if not index:
+            continue
+        available = 24000 - len(system) - len(messages[0]["content"]) - 2048
+        allocation = available // index
+        if allocation < 1024:
+            raise ProviderError("References and instructions leave insufficient review space. "
+                                "Split the task or reduce the selected team before starting.")
+        for previous in range(index):
+            budgets[previous] = min(budgets[previous], allocation)
+    return budgets
+
+
+def bounded_output(text: str, budget: int) -> tuple[str, bool]:
+    """Keep the longest prefix fitting the JSON-escaped handoff character budget."""
+    if len(json.dumps(text, ensure_ascii=False)) - 2 <= budget:
+        return text, False
+    low, high = 0, min(len(text), budget)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(json.dumps(text[:middle], ensure_ascii=False)) - 2 <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low], True
+
+
 def select_memory(memories: list[dict], bot: dict, cloud: bool, prompt: str,
                   handoffs: list[dict]) -> list[dict]:
     """Filter egress first, rank local keywords, then fit complete notes to context.
@@ -503,11 +540,13 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     try:
                         async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=bot, **auth)) as stream:
                             async for chunk in stream:
-                                remaining = 16000 - len(step["output"])
-                                step["output"] += chunk[:remaining]
+                                budget = mission["handoff_budgets"][bot_index]
+                                step["output"], exceeded = bounded_output(step["output"] + chunk, budget)
+                                step["handoff_budget"] = budget
                                 store.put("mission", mission)
-                                if len(chunk) > remaining:
-                                    raise OutputLimitError("The response exceeded the text limit. Partial output has been kept.")
+                                if exceeded:
+                                    raise OutputLimitError("The response exceeded its reserved handoff budget. "
+                                                           "Partial output has been kept; remaining content is missing.")
                     except OutputLimitError as exc:
                         step.update(status="partial", error=str(exc), error_code="output_limit")
                         # Never retry automatically or treat missing text as a successful draft.
@@ -616,7 +655,12 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 select_memory(memories, bot, cloud, data.prompt, initial)
             except ProviderError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        try:
+            handoff_budgets = plan_handoff_budgets(bots, data.prompt, initial)
+        except ProviderError as exc:
+            raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
+                   "handoff_budgets": handoff_budgets,
                    "cloud_consent": data.cloud_consent, "status": "queued", "steps": [], "created": now(), "error": None,
                    "connector_evidence": evidence, "telegram_notify": data.telegram_notify,
                    "attachments": attachments, "template_id": data.template_id, "attachment_mode": data.attachment_mode, "attachment_cloud_consent": data.attachment_cloud_consent,
