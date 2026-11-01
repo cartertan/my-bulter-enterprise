@@ -254,6 +254,20 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
+  if (state.capabilities?.artifact_draft_inspection && mission.artifact_id
+      && ['completed', 'completed_with_issues', 'failed', 'cancelled'].includes(mission.status)
+      && mission.steps[0]?.status === 'completed') {
+    head.append(button('Download draft for inspection (not accepted)', 'secondary', async () => {
+      try {
+        const response = await fetch(`/api/missions/${mission.id}/artifact/draft`, {headers: {'X-Bulter-Token': token}});
+        if (!response.ok) throw new Error((await response.json()).detail);
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement('a'); a.href = url;
+        a.download = `bulter-review-only-draft.${mission.artifact_format}`; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { notify(error.message); }
+    }));
+  }
   if (mission.artifact_id && !mission.template_id && mission.status === 'completed') {
     head.append(button('Download composed PowerPoint draft', 'secondary', async () => {
       try {

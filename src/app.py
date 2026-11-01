@@ -618,6 +618,38 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         store.put("document", document)
         return document
 
+    @app.get("/api/missions/{identifier}/artifact/draft")
+    async def inspect_artifact_draft(identifier: str) -> Response:
+        """Download a complete author artifact for inspection, without granting acceptance."""
+        mission = store.get("mission", identifier)
+        if not mission:
+            raise HTTPException(404, "Mission not found.")
+        if (mission.get("status") not in {"completed", "completed_with_issues", "failed", "cancelled"}
+                or not mission.get("steps") or mission["steps"][0].get("status") != "completed"):
+            raise HTTPException(409, "Only a finished attempt with a complete author artifact can be inspected.")
+        artifact = store.get("artifact", mission.get("artifact_id", ""))
+        try:
+            if (not artifact or artifact.get("mission_id") != identifier
+                    or artifact.get("format") not in {"docx", "pptx"}
+                    or artifact.get("format") != mission.get("artifact_format")):
+                raise ValueError("No matching draft artifact is available.")
+            data = base64.b64decode(artifact["raw"], validate=True)
+            digest = hashlib.sha256(data).hexdigest()
+            if digest != artifact["sha256"] or digest != mission.get("artifact_sha256"):
+                raise ValueError("Draft artifact integrity check failed.")
+            paragraphs = office_paragraphs(data, "artifact." + artifact["format"])
+            projection = json.dumps({"artifact_sha256": digest, "paragraphs": paragraphs}, ensure_ascii=False)
+            if projection != artifact.get("review_text"):
+                raise ValueError("Draft artifact text does not match its retained projection.")
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(409, "The draft artifact is missing or changed; do not use it for review.") from exc
+        suffix = artifact["format"]
+        mime = "application/vnd.openxmlformats-officedocument." + ("wordprocessingml.document" if suffix == "docx" else "presentationml.presentation")
+        return Response(data, media_type=mime, headers={
+            "Content-Disposition": f'attachment; filename="bulter-review-only-draft.{suffix}"',
+            "Cache-Control": "no-store", "X-Artifact-SHA256": digest,
+            "X-Artifact-Purpose": "inspection-only; acceptance-not-assessed"})
+
     @app.get("/api/missions/{identifier}/export/{format_name}")
     async def export_document(identifier: str, format_name: str, use_template: bool = False) -> Response:
         """Return a local editable artifact without sending data to a provider."""
@@ -657,7 +689,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}

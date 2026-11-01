@@ -737,3 +737,46 @@ def test_render_text_collection_includes_groups_tables_and_excludes_notes() -> N
     slide.notes_slide.notes_text_frame.text = 'Private speaker notes'
     assert slide_text_fragments(slide.shapes) == ['Grouped text', 'Table text']
     assert text_presence([], '')['state'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('problem', ['none', 'hash', 'owner', 'format', 'projection', 'partial', 'running', 'missing'])
+def test_unaccepted_draft_inspection_preserves_export_gates(tmp_path: Path, kind: str, problem: str) -> None:
+    """Unresolved reviews can be inspected without exposing stale or partial artifacts."""
+    import hashlib
+    raw = office(kind, 'Unaccepted synthetic draft')
+    digest = hashlib.sha256(raw).hexdigest()
+    app = create_app(tmp_path / 'draft-inspection.sqlite3')
+    mission = {'id': 'mission-1', 'status': 'completed_with_issues', 'artifact_id': 'artifact-1',
+               'artifact_sha256': digest, 'artifact_format': kind, 'acceptance_status': 'not_assessed',
+               'steps': [{'status': 'completed'}, {'status': 'completed', 'review': {'state': 'needs_revision'}}]}
+    artifact = {'id': 'artifact-1', 'mission_id': mission['id'], 'format': kind,
+                'sha256': digest, 'raw': base64.b64encode(raw).decode(),
+                'review_text': json.dumps({'artifact_sha256': digest, 'paragraphs': office_paragraphs(raw, 'draft.' + kind)}, ensure_ascii=False)}
+    if problem == 'hash':
+        mission['artifact_sha256'] = 'changed'
+    elif problem == 'owner':
+        artifact['mission_id'] = 'another-mission'
+    elif problem == 'format':
+        mission['artifact_format'] = 'pptx' if kind == 'docx' else 'docx'
+    elif problem == 'projection':
+        artifact['review_text'] = 'changed'
+    elif problem == 'partial':
+        mission['steps'][0]['status'] = 'partial'
+    elif problem == 'running':
+        mission['status'] = 'running'
+    app.state.store.put('mission', mission)
+    if problem != 'missing':
+        app.state.store.put('artifact', artifact)
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.get('/api/missions/mission-1/artifact/draft')
+        assert response.status_code == (200 if problem == 'none' else 409)
+        if problem == 'none':
+            assert response.content == raw
+            assert response.headers['x-artifact-sha256'] == digest
+            assert response.headers['cache-control'] == 'no-store'
+            assert 'inspection-only' in response.headers['x-artifact-purpose']
+            assert 'review-only-draft' in response.headers['content-disposition']
+            assert app.state.store.get('mission', mission['id'])['acceptance_status'] == 'not_assessed'
+        assert client.get('/api/missions/mission-1/export/' + kind).status_code == 400
