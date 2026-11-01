@@ -151,3 +151,147 @@ def test_vision_capability_fails_closed(monkeypatch) -> None:
         asyncio.run(require_vision([{'provider':'ollama','model':'text-only'}]))
     with pytest.raises(HTTPException, match='Ollama'):
         asyncio.run(require_vision([{'provider':'openai','model':'cloud'}]))
+
+
+def linked_office(kind: str, text: str, target: str, relationship_type: str = 'hyperlink', mode: str = 'External') -> bytes:
+    """Create a real linked run, then vary only its relationship for security tests."""
+    from lxml import etree as ET
+    source = io.BytesIO()
+    if kind == 'docx':
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.opc.constants import RELATIONSHIP_TYPE
+        document = Document()
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(text)
+        link = OxmlElement('w:hyperlink')
+        link.set(qn('r:id'), document.part.relate_to(target, RELATIONSHIP_TYPE.HYPERLINK, is_external=True))
+        link.append(run._r)
+        paragraph._p.append(link)
+    else:
+        from pptx.util import Inches
+        document = Presentation()
+        slide = document.slides.add_slide(document.slide_layouts[6])
+        run = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(4)).text_frame.paragraphs[0].add_run()
+        run.text = text
+        run.hyperlink.address = target
+    document.save(source)
+    output = io.BytesIO()
+    with zipfile.ZipFile(source) as old, zipfile.ZipFile(output, 'w') as new:
+        for item in old.infolist():
+            content = old.read(item.filename)
+            if item.filename.endswith('.rels'):
+                root = ET.fromstring(content)
+                for node in root:
+                    if node.get('Type', '').endswith('/hyperlink'):
+                        node.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/' + relationship_type)
+                        node.set('TargetMode', mode)
+                content = ET.tostring(root)
+            new.writestr(item, content)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('operation', ['edit', 'placeholder'])
+def test_https_citations_preserve_relationship_and_unchanged_parts(kind: str, operation: str) -> None:
+    """A real citation survives preflight and export without touching other parts."""
+    original = 'Original wording' if operation == 'edit' else '{{RESPONSE}}'
+    source = linked_office(kind, original, 'https://example.com/research?q=wallet#citations')
+    assert office_paragraphs(source, 'source.' + kind) == [original]
+    if operation == 'edit':
+        result = edited_output(source, 'source.' + kind, completed(json.dumps({'replacements': [{'old': original, 'new': 'New wording'}]})))
+    else:
+        result = template_output(source, 'source.' + kind, completed('New wording'))
+    assert office_paragraphs(result, 'result.' + kind) == ['New wording']
+    changed_part = 'word/document.xml' if kind == 'docx' else 'ppt/slides/slide1.xml'
+    with zipfile.ZipFile(io.BytesIO(source)) as old, zipfile.ZipFile(io.BytesIO(result)) as new:
+        assert old.namelist() == new.namelist()
+        assert all(old.read(name) == new.read(name) for name in old.namelist() if name != changed_part)
+    # Reopen with the native document library as a structural compatibility check.
+    (Document if kind == 'docx' else Presentation)(io.BytesIO(result))
+
+
+@pytest.mark.parametrize('target', [
+    'http://example.com/citation', 'file:///tmp/example', 'javascript:alert(1)',
+    '//example.com/citation', 'https://user:password@example.com',
+    'https://127.0.0.1/citation', 'https://[::1]/citation', 'https://localhost/citation',
+    'https://service.local/citation', 'https://example.com:8443/citation',
+    'https://example.com:bad/citation', 'https://example.com/%0aevil',
+    'https://example.com/%ZZ', 'https://example.com\\evil', 'https://bad host.com',
+    'https://example.com./', 'https://example..com/', 'https://2130706433/',
+])
+def test_unsafe_citation_targets_rejected(target: str) -> None:
+    """No script/file/local/ambiguous targets receive the HTTPS exception."""
+    from src.attachments import citation_target_allowed
+    assert not citation_target_allowed(target)
+    source = linked_office('pptx', '{{RESPONSE}}', target)
+    with pytest.raises(ValueError):
+        office_paragraphs(source, 'source.pptx')
+    with pytest.raises(ValueError):
+        template_output(source, 'source.pptx', completed('New wording'))
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('relationship_type,mode', [('attachedTemplate', 'External'), ('oleObject', 'External'),
+    ('image', 'External'), ('hyperlink', 'external'), ('hyperlink', 'Internal')])
+def test_external_objects_and_disguised_modes_rejected(kind: str, relationship_type: str, mode: str) -> None:
+    """The exception is restricted to hyperlink type and exact external mode."""
+    source = linked_office(kind, 'Original wording', 'https://example.com/citation', relationship_type, mode)
+    with pytest.raises(ValueError):
+        office_paragraphs(source, 'source.' + kind)
+    with pytest.raises(ValueError):
+        edited_output(source, 'source.' + kind, completed(json.dumps({'replacements': [{'old': 'Original wording', 'new': 'New wording'}]})))
+
+
+@pytest.mark.parametrize('name', ['ppt/embeddings/object.bin', 'word/activeX/control.xml'])
+def test_active_parts_still_block_preflight(name: str) -> None:
+    """A valid citation does not weaken the embedded-object prohibition."""
+    source = linked_office('pptx', '{{RESPONSE}}', 'https://example.com/citation')
+    output = io.BytesIO(source)
+    with zipfile.ZipFile(output, 'a') as archive:
+        archive.writestr(name, b'synthetic')
+    with pytest.raises(ValueError, match='active content'):
+        office_paragraphs(output.getvalue(), 'source.pptx')
+
+
+@pytest.mark.parametrize('content', [
+    b'<Relationships',
+    b'<Relationships xmlns="urn:wrong"/>',
+    b'<!DOCTYPE Relationships [<!ENTITY x "https://example.com">]><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+    b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="a" Target="a" Type="t"/><Relationship Id="a" Target="b" Type="t"/></Relationships>',
+])
+def test_malformed_relationships_fail_closed(content: bytes) -> None:
+    """Malformed roots, duplicate IDs and entity declarations are not preserved."""
+    from src.attachments import validate_office_part
+    with pytest.raises(ValueError):
+        validate_office_part('ppt/slides/_rels/slide1.xml.rels', content)
+
+
+def test_unsafe_template_rejected_before_model_call(tmp_path: Path, monkeypatch) -> None:
+    """Office edit preflight checks relationship safety before inference."""
+    calls = []
+
+    async def stream(*args, **kwargs):
+        """Any model invocation here is a regression."""
+        calls.append(True)
+        yield 'Unexpected'
+
+    monkeypatch.setattr('src.app.generate', stream)
+    app = create_app(tmp_path / 'test.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bot = client.post('/api/bulters', json={'name': 'Test', 'role': 'Edit', 'provider': 'ollama', 'model': 'test'}).json()
+        source = linked_office('pptx', 'Original wording', 'https://example.com/payload', 'oleObject')
+        uploaded = client.post('/api/attachments?filename=synthetic.pptx', content=source)
+        assert uploaded.status_code == 200
+        identifier = uploaded.json()['id']
+        response = client.post('/api/missions', json={'prompt': 'Edit wording', 'bulter_ids': [bot['id']],
+            'attachment_ids': [identifier], 'template_id': identifier, 'attachment_mode': 'edit'})
+        assert response.status_code == 400
+        assert not calls and not app.state.store.all('mission')
+
+
+def test_root_relative_internal_relationship_remains_supported() -> None:
+    """Valid OPC package-root targets are not confused with network addresses."""
+    from src.attachments import validate_office_part
+    validate_office_part('_rels/.rels', b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/></Relationships>')

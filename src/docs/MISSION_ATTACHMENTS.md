@@ -48,3 +48,9 @@ Placeholder templates must contain `{{RESPONSE}}` in a paragraph or slide text b
 - Existing test dependency warning: Starlette warns that its httpx-backed TestClient is deprecated. Tests passed; no dependency migration was made.
 
 ![Mission file and photo previews](screenshots/mission-attachments.jpg)
+
+## Office citation links
+
+- Template preflight and exports preserve structurally validated HTTPS hyperlinks without opening their targets. Links must use DNS-style hosts and the default HTTPS port; credentials, local/IP targets and malformed URLs are rejected.
+- Other external relationships, embedded objects and active content remain unsupported. Unsafe Office edit sources fail before model generation.
+- Citation preservation does not verify a publisher, claim or URL destination. Review citations and rendered output before sharing a deliverable. HTTP and non-HTTPS link schemes are not supported by this exception.

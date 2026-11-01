@@ -7,10 +7,13 @@ Office templates use explicit {{RESPONSE}} placeholders. Author: Carter Tan.
 import base64
 import io
 import json
+import ipaddress
+import re
 import sys
 import warnings
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 from lxml import etree as ET
 
 from PIL import Image, ImageOps
@@ -18,6 +21,71 @@ from src.documents import MAX_UPLOAD, extract_text
 
 IMAGE_TYPES = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}
 MAX_REFERENCE = 12000
+
+
+def citation_target_allowed(target: str) -> bool:
+    """Accept bounded HTTPS citation syntax without resolving or fetching URLs.
+
+    Only DNS names and default HTTPS ports are allowed. This validates syntax,
+    not the publisher's trustworthiness, DNS resolution or citation accuracy.
+    """
+    if (not target or len(target) > 2048 or "\\" in target
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in target)
+            or re.search(r"%(?![0-9a-fA-F]{2})", target)
+            or any(ord(char) < 32 or ord(char) == 127 for char in unquote(target))):
+        return False
+    try:
+        url = urlsplit(target)
+        host = url.hostname or ""
+        if (url.scheme != "https" or url.username is not None or url.password is not None
+                or url.port not in (None, 443) or not host or host.endswith(".")):
+            return False
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return False
+        # Reject intranet names and malformed authorities; no DNS lookup occurs.
+        labels = host.split(".")
+        return (len(host) <= 253 and len(labels) >= 2
+                and labels[-1] not in {"localhost", "local", "internal", "invalid", "test"}
+                and not labels[-1].isdigit()
+                and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                        for label in labels))
+    except ValueError:
+        return False
+
+
+def validate_office_part(name: str, content: bytes) -> None:
+    """Reject active package parts and allow only validated external hyperlinks."""
+    lowered = name.lower()
+    if "/embeddings/" in lowered or "/activex/" in lowered:
+        raise ValueError("Remove embedded objects or active content from this Office file.")
+    if not lowered.endswith(".rels"):
+        return
+    namespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+    hyperlink_types = {"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                       "http://purl.oclc.org/ooxml/officeDocument/relationships/hyperlink"}
+    try:
+        root = ET.fromstring(content, parser=ET.XMLParser(resolve_entities=False, no_network=True))
+        if root.tag != f"{{{namespace}}}Relationships" or root.getroottree().docinfo.doctype:
+            raise ValueError("Invalid Office relationships.")
+        identifiers = set()
+        for node in root:
+            identifier, target = node.get("Id"), node.get("Target", "")
+            if (node.tag != f"{{{namespace}}}Relationship" or not identifier or identifier in identifiers
+                    or not target or not node.get("Type")):
+                raise ValueError("Invalid Office relationships.")
+            identifiers.add(identifier)
+            mode = node.get("TargetMode", "Internal")
+            if mode == "External":
+                if node.get("Type") not in hyperlink_types or not citation_target_allowed(target):
+                    raise ValueError("Only validated HTTPS citation hyperlinks may be external Office relationships.")
+            elif mode != "Internal" or "\\" in target or urlsplit(target).scheme or target.startswith("//"):
+                raise ValueError("Invalid internal Office relationship target or mode.")
+    except ET.XMLSyntaxError as exc:
+        raise ValueError("Invalid Office relationships XML.") from exc
 
 
 def parse(data: bytes, filename: str) -> dict:
@@ -60,13 +128,7 @@ def template_output(data: bytes, filename: str, mission: dict) -> bytes:
     with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as destination:
         for item in source.infolist():
             content = source.read(item.filename)
-            # External links/embedded files are not copied into a generated deliverable.
-            if "/embeddings/" in item.filename or "/activeX/" in item.filename:
-                raise ValueError("Templates with embedded objects or active content are not supported.")
-            if item.filename.endswith(".rels"):
-                root = ET.fromstring(content, parser=ET.XMLParser(resolve_entities=False, no_network=True))
-                if any(node.attrib.get("TargetMode") == "External" for node in root):
-                    raise ValueError("Remove external links from the template before exporting.")
+            validate_office_part(item.filename, content)
             eligible = item.filename == "word/document.xml" or (item.filename.startswith("ppt/slides/slide") and item.filename.endswith(".xml"))
             if eligible:
                 root = ET.fromstring(content, parser=ET.XMLParser(resolve_entities=False, no_network=True))
@@ -111,6 +173,7 @@ def office_paragraphs(data: bytes, filename: str) -> list[str]:
     paragraphs = []
     with zipfile.ZipFile(io.BytesIO(data)) as source:
         for name in source.namelist():
+            validate_office_part(name, source.read(name))
             if name == "word/document.xml" or (name.startswith("ppt/slides/slide") and name.endswith(".xml")):
                 root = ET.fromstring(source.read(name), parser=ET.XMLParser(resolve_entities=False, no_network=True))
                 ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main" if name.startswith("word/") else "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -147,12 +210,7 @@ def edited_output(data: bytes, filename: str, mission: dict) -> bytes:
     with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as destination:
         for item in source.infolist():
             content = source.read(item.filename)
-            if "/embeddings/" in item.filename or "/activeX/" in item.filename:
-                raise ValueError("Remove embedded objects or active content from this Office file.")
-            if item.filename.endswith(".rels"):
-                root = ET.fromstring(content, parser=ET.XMLParser(resolve_entities=False, no_network=True))
-                if any(node.attrib.get("TargetMode") == "External" for node in root):
-                    raise ValueError("Remove external links from the Office file before exporting.")
+            validate_office_part(item.filename, content)
             if item.filename == "word/document.xml" or (item.filename.startswith("ppt/slides/slide") and item.filename.endswith(".xml")):
                 root = ET.fromstring(content, parser=ET.XMLParser(resolve_entities=False, no_network=True))
                 ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main" if item.filename.startswith("word/") else "http://schemas.openxmlformats.org/drawingml/2006/main"
