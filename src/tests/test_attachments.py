@@ -352,3 +352,80 @@ def test_two_agent_office_review_binds_exact_export(tmp_path: Path, monkeypatch,
         # Stored content corruption must not silently regenerate or deliver a different revision.
         app.state.store.put('artifact', {**artifact, 'raw': base64.b64encode(b'changed bytes').decode()})
         assert client.get(f"/api/missions/{mission['id']}/export/{kind}").status_code == 400
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('scenario', ['review_interrupted', 'author_invalid', 'revise_failed_review', 'corrupt_projection'])
+def test_office_recovery_and_revision_preserve_artifact_lineage(tmp_path: Path, monkeypatch, kind: str, scenario: str) -> None:
+    """Recover exact artifacts or create newly reviewed revisions without overwriting history."""
+    import hashlib
+    from src.providers import ProviderError
+    from src.tests.test_app import add_bot, wait_mission
+    author_calls = []
+    review_calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Distinguish author and reviewer by their actual assigned output contract."""
+        if 'Office text-edit task' in system:
+            author_calls.append(messages)
+            old = 'Missing target' if scenario == 'author_invalid' and len(author_calls) == 1 else 'Original wording'
+            yield json.dumps({'replacements': [{'old': old, 'new': f'Revised wording {len(author_calls)}'}]})
+        else:
+            review_calls.append(messages)
+            refs = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
+            projection = refs['previous_bulter_outputs'][-1]['output']
+            assert 'paragraphs' in json.loads(projection)
+            if scenario in {'review_interrupted', 'corrupt_projection'} and len(review_calls) == 1:
+                yield 'Interrupted assessment'
+                raise ProviderError('Synthetic interruption')
+            verdict = 'fail' if scenario == 'revise_failed_review' and len(review_calls) == 1 else 'pass'
+            yield json.dumps({'draft_hash': hashlib.sha256(projection.encode()).hexdigest(), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': verdict, 'reason': 'Synthetic review', 'evidence_quotes': ['Revised wording']}]})
+
+    monkeypatch.setattr('src.app.generate', stream)
+    path = tmp_path / 'office-recovery.sqlite3'
+    app = create_app(path)
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        attachment = client.post('/api/attachments?filename=source.' + kind, content=office(kind, 'Original wording')).json()
+        response = client.post('/api/missions', json={'prompt': 'Revise text', 'bulter_ids': [b['id'] for b in bots],
+            'attachment_ids': [attachment['id']], 'template_id': attachment['id'], 'attachment_mode': 'edit',
+            'review_criteria': ['Check wording']})
+        assert response.status_code == 200
+        original = wait_mission(client)
+        assert original['status'] == ('completed_with_issues' if scenario == 'revise_failed_review' else 'failed')
+        if scenario == 'author_invalid':
+            assert original['steps'][0]['status'] == 'failed'
+            assert 'artifact_id' not in original
+        if scenario == 'corrupt_projection':
+            artifact = app.state.store.get('artifact', original['artifact_id'])
+            app.state.store.put('artifact', {**artifact, 'review_text': 'Forged review projection'})
+    # Restart must not repeat completed author inference or trust corrupted projection text.
+    fresh = create_app(path)
+    with TestClient(fresh) as client:
+        client.headers['x-bulter-token'] = fresh.state.csrf
+        action = 'revise' if scenario == 'revise_failed_review' else 'resume'
+        response = client.post(f"/api/missions/{original['id']}/{action}", json={})
+        if scenario == 'corrupt_projection':
+            assert response.status_code == 409
+            assert len(author_calls) == len(review_calls) == 1
+            return
+        assert response.status_code == 200, response.text
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert fresh.state.store.get('mission', original['id']) == original
+        exported = client.get(f"/api/missions/{child['id']}/export/{kind}")
+        assert exported.status_code == 200
+        assert hashlib.sha256(exported.content).hexdigest() == child['artifact_sha256']
+        if scenario == 'review_interrupted':
+            assert len(author_calls) == 1 and len(review_calls) == 2
+            assert child['artifact_sha256'] == original['artifact_sha256']
+            assert child['artifact_id'] != original['artifact_id']
+        else:
+            assert len(author_calls) == 2
+            assert office_paragraphs(exported.content, 'result.' + kind) == ['Revised wording 2']
+            if scenario == 'revise_failed_review':
+                assert child['artifact_sha256'] != original['artifact_sha256']
+                assert child['steps'][1]['review']['artifact_sha256'] == child['artifact_sha256']

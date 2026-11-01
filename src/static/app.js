@@ -219,7 +219,7 @@ function renderDetail() {
     try { await api(`missions/${mission.id}/stop`, 'POST'); await refresh(); }
     catch (error) { notify(error.message); }
   }));
-  if (state.capabilities?.checkpoint_resume && mission.source_revisions && mission.attachment_mode === 'reference'
+  if (state.capabilities?.checkpoint_resume && mission.source_revisions && (mission.attachment_mode === 'reference' || (['edit', 'reuse_design'].includes(mission.attachment_mode) && mission.review_criteria?.length))
       && ['failed', 'cancelled', 'interrupted'].includes(mission.status)
       && (mission.resume_attempt || 0) < 3 && !state.missions.some(m => m.parent_mission_id === mission.id)) {
     head.append(button('Resume unfinished steps', 'secondary', async () => {

@@ -59,4 +59,4 @@ Placeholder templates must contain `{{RESPONSE}}` in a paragraph or slide text b
 
 - Select two Bulters, an Office source in edit/design-reuse mode, and explicit structured review criteria. The author proposes exact paragraph replacements; the reviewer assesses text extracted from the resulting file.
 - The app retains the generated file and binds the review to its SHA-256. Only passing structured assessments permit downloading those exact bytes. User acceptance is separate.
-- This workflow preserves existing layout/assets but does not add pictures, diagrams or new slides. Rendered-layout inspection and Office revision/recovery remain pending. Long resulting text must fit the complete review budget.
+- This workflow preserves existing layout/assets but does not add pictures, diagrams or new slides. Two-agent structured Office workflows support explicit recovery and up to two revision rounds; retained bytes and text projections are revalidated. Rendered-layout inspection remains pending. Long resulting text must fit the complete review budget.

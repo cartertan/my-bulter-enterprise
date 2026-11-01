@@ -158,3 +158,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Reject resulting text that exceeds reserved review capacity rather than silently dropping paragraphs. Reference inputs remain untrusted; user acceptance stays not_assessed. The UI discloses package/text-only validation and pending rendered-layout inspection.
 - Validation: 239 tests pass, JavaScript syntax and 74-file packaging checks pass. Synthetic DOCX/PPTX tests cover both edit modes, actual edited-text review, passing/failing verdicts, byte-exact export, mismatched format and stored-content corruption. Existing single-agent tests continue passing.
 - Pending: rendered/layout validation, Office revision/recovery, browser and representative local-model checks, new diagrams/pictures and source-based composition. Issue #6 remains open and in progress; no presentation-readiness claim.
+
+### ART-001A Office recovery and revision: 1 November 2026
+
+- Extended explicit recovery and bounded revision to two-agent structured Office edit workflows. Recovery after an interrupted reviewer reuses exact artifact bytes under a new child ownership record and hands the artifact text, not author edit JSON, to the reviewer.
+- Verify retained bytes, source/memory/agent permissions and the recomputed text projection before recovery or revision. Modified projections fail before inference. Revision creates a new artifact from the original source with full previous artifact/review feedback and a new hash-bound assessment; prior artifacts and missions remain unchanged.
+- Corrected author checkpoint status when proposed edits cannot produce a valid artifact. The author step is failed, so recovery cannot skip nonexistent artifact creation.
+- Validation: 247 tests pass, JavaScript syntax and 74-file package checks pass. DOCX/PPTX restart regressions cover reviewer interruption without repeated author inference, invalid author proposals, failed-review revisions, changed artifact hashes, exact export and corrupted projection rejection.
+- Pending: browser/real-model checks, rendered-layout validation and visual composition. Single-agent legacy Office missions remain outside checkpoint recovery. Final user acceptance remains deferred.
