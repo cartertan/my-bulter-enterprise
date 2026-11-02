@@ -459,6 +459,13 @@ def test_structured_review_fails_closed(variant: str) -> None:
     assert result['reviewer_id'] == 'actual-reviewer'
     assert result['draft_hash'] == draft_hash(author['output'])
     assert result['state'] == ('criteria_pass' if variant == 'valid' else 'needs_revision' if variant in {'fail', 'unknown'} else 'invalid')
+    expected_codes = {'missing': 'review_schema', 'duplicate': 'review_criteria', 'stale': 'review_draft_hash',
+        'forged_identity': 'review_schema', 'invented_quote': 'review_evidence', 'no_quote': 'review_missing_evidence',
+        'partial_author': 'review_incomplete_draft', 'duplicate_key': 'review_json_fields', 'prose': 'review_json'}
+    assert result.get('error_code') == expected_codes.get(variant)
+    if variant in expected_codes:
+        assert result['criteria'] == [] and result['error']
+
 
 
 @pytest.mark.parametrize('verdict', ['pass', 'fail', 'invalid'])
@@ -789,3 +796,15 @@ def test_timing_prompt_uses_one_complete_mode_specific_example(compose: bool) ->
     assert 'not the sample values' in prompt
     assert timing_prompt('Review the actual artifact.', 60, False, compose).count('matching this structure') == 0
     assert timing_prompt('No timed output requested.', None, True, compose) == 'No timed output requested.'
+
+
+@pytest.mark.parametrize('output', ['PRIVATE_PAYLOAD_MARKER', '{"private_field":"PRIVATE_PAYLOAD_MARKER"}'])
+def test_invalid_review_diagnostics_do_not_echo_payload(output: str) -> None:
+    """Diagnostics may guide correction without duplicating untrusted or private text."""
+    import json
+    from src.app import validate_draft_review
+    author = {'bulter_id': 'author', 'output': 'Synthetic draft', 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    result = validate_draft_review(output, author, ['Synthetic criterion'], 'reviewer')
+    assert result['state'] == 'invalid' and result['error_code'] in {'review_json', 'review_schema'}
+    assert 'PRIVATE_PAYLOAD_MARKER' not in json.dumps(result)

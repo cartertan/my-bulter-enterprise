@@ -350,21 +350,34 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
               "draft_hash": draft_hash(author["output"]), "section_id": author["section_id"],
               "draft_revision": author["draft_revision"], "state": "invalid", "criteria": []}
+    def invalid(code: str, message: str) -> dict:
+        """Return actionable diagnostics without echoing model payloads or parser details."""
+        return {**record, "error_code": code, "error": message}
+
     try:
-        review = DraftReview.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
-        expected = {f"criterion-{index + 1}" for index in range(len(criteria))}
-        if (review.draft_hash != record["draft_hash"] or len(review.criteria) != len(expected)
-                or {item.criterion_id for item in review.criteria} != expected):
-            raise ValueError("Stale draft or incorrect criteria")
-        for item in review.criteria:
-            if item.result == "pass" and (not item.evidence_quotes or author["status"] != "completed"):
-                raise ValueError("Missing or incomplete draft evidence")
-            if any(not quote.strip() or len(quote) > 2000 or quote not in author["output"] for quote in item.evidence_quotes):
-                raise ValueError("Unverifiable draft quotation")
-        record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
-                      criteria=[item.model_dump() for item in review.criteria])
+        payload = json.loads(output, object_pairs_hook=unique_json_fields)
+    except json.JSONDecodeError:
+        return invalid("review_json", "Review must be one valid JSON object without prose or markdown fences.")
     except (ValueError, TypeError):
-        record["error"] = "Review is invalid: check the JSON schema, draft hash, criterion coverage and exact quotations."
+        return invalid("review_json_fields", "Review JSON contains duplicate fields or an unsupported input value.")
+    try:
+        review = DraftReview.model_validate(payload)
+    except (ValueError, TypeError):
+        return invalid("review_schema", "Review fields do not match the required schema. Include draft_hash and a nonempty criteria list; no extra fields.")
+    expected = {f"criterion-{index + 1}" for index in range(len(criteria))}
+    if review.draft_hash != record["draft_hash"]:
+        return invalid("review_draft_hash", "Review refers to the wrong draft hash. Use the exact review hash supplied for this artifact revision.")
+    if len(review.criteria) != len(expected) or {item.criterion_id for item in review.criteria} != expected:
+        return invalid("review_criteria", "Review must assess every requested criterion exactly once using the supplied criterion IDs.")
+    for item in review.criteria:
+        if item.result == "pass" and author["status"] != "completed":
+            return invalid("review_incomplete_draft", "A passing assessment cannot rely on an incomplete author draft.")
+        if item.result == "pass" and not item.evidence_quotes:
+            return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
+        if any(not quote.strip() or len(quote) > 2000 or quote not in author["output"] for quote in item.evidence_quotes):
+            return invalid("review_evidence", "Review quotations must be nonempty, within the size limit and present exactly in the retained draft.")
+    record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
+                  criteria=[item.model_dump() for item in review.criteria])
     return record
 
 
