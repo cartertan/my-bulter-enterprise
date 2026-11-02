@@ -15,6 +15,15 @@ let timer;
 const labels = {ollama: 'Ollama', lmstudio: 'LM Studio', openai: 'OpenAI', anthropic: 'Claude', openrouter: 'OpenRouter'};
 const cloud = (p) => !['ollama', 'lmstudio'].includes(p);
 
+function attemptDescription(mission) {
+  if (!mission.parent_mission_id) return '';
+  const source = `Original mission ${mission.parent_mission_id}.`;
+  if (mission.attempt_kind === 'revision') return `Revision attempt ${mission.resume_attempt} · ${source} The author and reviewer run again for every scope; the prior attempt is preserved.`;
+  if (mission.attempt_kind === 'recovery') return `Recovery attempt ${mission.resume_attempt} · ${source} Completed steps are reused; unfinished steps restart.`;
+  // Older saved attempts lack an explicit kind; do not infer whether steps were reused.
+  return `Follow-up attempt ${mission.resume_attempt} · ${source} See the recorded steps for execution details.`;
+}
+
 function el(tag, className = '', text = '') {
   const node = document.createElement(tag);
   node.className = className;
@@ -297,7 +306,7 @@ function renderDetail() {
   }
   panel.append(head, el('p', 'brief', mission.prompt));
   if (mission.revision_round) panel.append(el('p', 'help', `Draft revision round ${mission.revision_round} of 2. User acceptance remains unassessed.`));
-  if (mission.parent_mission_id) panel.append(el('p', 'help', `Recovery attempt ${mission.resume_attempt} · original mission ${mission.parent_mission_id}. Completed steps are reused; unfinished steps restart.`));
+  if (mission.parent_mission_id) panel.append(el('p', 'help', attemptDescription(mission)));
   panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
   if (mission.sections?.length) {
     for (const [index, scope] of mission.sections.entries()) {

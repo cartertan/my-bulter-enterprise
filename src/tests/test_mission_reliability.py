@@ -602,6 +602,7 @@ def test_bounded_revision_preserves_history_and_rechecks_new_draft(tmp_path: Pat
         assert client.post(f"/api/missions/{original['id']}/revise", json={}).status_code == 200
         child = wait_mission(client)
         assert child['revision_round'] == 1 and len(calls) == 4
+        assert child['attempt_kind'] == 'revision'
         assert child['steps'][1]['review']['draft_hash'] == draft_hash(drafts[-1])
         assert child['steps'][1]['review']['draft_hash'] != original['steps'][1]['review']['draft_hash']
         assert child['acceptance_status'] == 'not_assessed'

@@ -415,6 +415,7 @@ def test_office_recovery_and_revision_preserve_artifact_lineage(tmp_path: Path, 
         child = wait_mission(client)
         assert child['status'] == 'completed'
         assert child['acceptance_status'] == 'not_assessed'
+        assert child['attempt_kind'] == ('revision' if scenario == 'revise_failed_review' else 'recovery')
         assert fresh.state.store.get('mission', original['id']) == original
         exported = client.get(f"/api/missions/{child['id']}/export/{kind}")
         assert exported.status_code == 200

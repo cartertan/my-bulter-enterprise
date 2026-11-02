@@ -190,3 +190,24 @@ def test_local_static_app_and_session_boundary(tmp_path: Path) -> None:
         assert client.get('/static/app.js').status_code==200
         assert client.get('/api/state',headers={'x-bulter-token':other.state.csrf}).status_code==403
         assert client.get('/api/state',headers={'x-bulter-token':app.state.csrf}).status_code==200
+
+
+def test_attempt_disclosure_distinguishes_revision_recovery_and_legacy() -> None:
+    """The UI must not promise reused steps when a revision runs both agents again."""
+    import subprocess
+    import shutil
+    source = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text()
+    function = source[source.index('function attemptDescription('):source.index('function el(')]
+    script = function + """
+const assert = require('node:assert/strict');
+const parent = {parent_mission_id:'synthetic-parent', resume_attempt:2, revision_round:1};
+assert.match(attemptDescription({...parent, attempt_kind:'revision'}), /run again for every scope/);
+assert.doesNotMatch(attemptDescription({...parent, attempt_kind:'revision'}), /steps are reused/);
+assert.match(attemptDescription({...parent, attempt_kind:'recovery'}), /Completed steps are reused/);
+assert.match(attemptDescription(parent), /Follow-up attempt/);
+assert.doesNotMatch(attemptDescription(parent), /steps are reused|run again/);
+assert.equal(attemptDescription({}), '');
+"""
+    node = shutil.which('node')
+    assert node, 'Node.js is required for UI regression checks.'
+    subprocess.run([node, '-e', script], check=True, capture_output=True, timeout=15)

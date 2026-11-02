@@ -1169,6 +1169,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 break
             retained.append(step)
         child = {**parent, "id": str(uuid4()), "parent_mission_id": identifier,
+                 "attempt_kind": "revision" if revise else "recovery",
                  "resume_attempt": parent.get("resume_attempt", 0) + 1,
                  "steps": retained, "status": "queued", "error": None, "created": now(),
                  "cloud_consent": data.cloud_consent, "attachment_cloud_consent": data.attachment_cloud_consent,
