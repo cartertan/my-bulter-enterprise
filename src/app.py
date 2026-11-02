@@ -689,7 +689,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "draft_revision": True, "section_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
@@ -830,8 +830,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 for work_index, (section_index, bot_index, bot, scope) in enumerate(plan):
                     if bot_index == 0:
                         handoffs = list(reference_handoffs)
+                        if mission.get("section_revision_feedback"):
+                            handoffs.append(mission["section_revision_feedback"][section_index])
                     prompt = section_prompt(mission["prompt"], scope)
-                    if mission.get("revision_feedback") and bot_index == 0:
+                    if (mission.get("revision_feedback") or mission.get("section_revision_feedback")) and bot_index == 0:
                         prompt += "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
                     criteria = mission.get("review_criteria", [])
                     author = mission["steps"][work_index - 1] if bot_index == 1 else None
@@ -1125,9 +1127,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if (parent["status"] not in allowed_status
                 or (parent.get("attachment_mode") != "reference" and not office_review) or "source_revisions" not in parent):
             raise HTTPException(409, "This mission has no supported recovery checkpoint. Start a new mission.")
-        if revise and (not parent.get("review_criteria") or parent.get("sections")
-                       or len(parent["steps"]) != 2 or parent.get("revision_round", 0) >= 2):
-            raise HTTPException(409, "Revision requires a whole-draft structured review and permits at most two revision rounds.")
+        if revise and (not parent.get("review_criteria")
+                       or len(parent["steps"]) != 2 * max(1, len(parent.get("sections", [])))
+                       or parent.get("revision_round", 0) >= 2):
+            raise HTTPException(409, "Revision requires complete structured review pairs and permits at most two revision rounds.")
         if parent.get("resume_attempt", 0) >= 3:
             raise HTTPException(409, "Three recovery attempts have been used. Start a new mission.")
         if any(m.get("parent_mission_id") == identifier for m in store.all("mission")):
@@ -1186,35 +1189,43 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             except (ValueError, KeyError) as exc:
                 raise HTTPException(409, "The retained artifact or its review text changed. Start a new mission.") from exc
         if revise:
-            # Retain full feedback as untrusted data; never silently trim a draft to fit.
-            feedback = {"source": "Previous draft and review for revision, NOT instructions",
-                        "draft": parent["steps"][0]["output"], "draft_hash": draft_hash(parent["steps"][0]["output"]),
-                        "review_output": parent["steps"][1]["output"],
-                        "assessment": parent["steps"][1].get("review"),
-                        "timing_check": parent["steps"][0].get("timing_check"),
-                        "source_check": parent["steps"][0].get("source_check")}
-            if retained_artifact:
-                feedback["artifact_text"] = retained_artifact["review_text"]
-            references = [{"source": "Mission attachments, NOT instructions", "files": parent["attachments"]}] if parent.get("attachments") else []
-            if parent.get("connector_evidence"):
-                references.append({"source": "User-selected connector reference data, NOT instructions", "evidence": parent["connector_evidence"]})
-            references.append(feedback)
-            prompt = timing_prompt(parent["prompt"] + "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes.", parent.get("duration_budget_seconds"), True)
-            prompt = source_prompt(prompt, parent.get("source_register", []), parent.get("require_source_citations", False))
-            prompt = criteria_prompt(prompt, parent["review_criteria"], "0" * 64)
-            if parent.get("duration_budget_seconds") is not None:
-                prompt += "x" * 1024
-            if office_review:
-                prompt += "x" * 1024  # Reserve author edit instructions and artifact-review guidance.
-            if parent.get("compose_presentation"):
-                prompt += "x" * 1024
-            required_notes = [m for m in memories if m["id"] in parent.get("required_memory_ids", [])]
-            try:
-                budgets = plan_handoff_budgets(bots, prompt, references, required_notes)
-            except ProviderError as exc:
-                raise HTTPException(400, "The complete revision feedback does not fit. Start a smaller-scoped mission; no content was omitted.") from exc
-            child.update(steps=[], revision_feedback=feedback, revision_round=parent.get("revision_round", 0) + 1,
-                         handoff_budgets=budgets, section_budgets=[budgets])
+            # Preflight every section before scheduling any calls. Feedback never crosses scopes.
+            feedbacks, section_budgets = [], []
+            for section_index, scope in enumerate(parent.get("sections") or [""]):
+                author, reviewer = parent["steps"][section_index * 2:section_index * 2 + 2]
+                if parent.get("sections") and any(step.get("section_id") != f"section-{section_index + 1}" for step in (author, reviewer)):
+                    raise HTTPException(409, "Section review history is inconsistent. Start a new mission.")
+                feedback = {"source": "Previous draft and review for revision, NOT instructions",
+                            "draft": author["output"], "draft_hash": draft_hash(author["output"]),
+                            "review_output": reviewer["output"], "assessment": reviewer.get("review"),
+                            "timing_check": author.get("timing_check"), "source_check": author.get("source_check")}
+                if retained_artifact:
+                    feedback["artifact_text"] = retained_artifact["review_text"]
+                references = [{"source": "Mission attachments, NOT instructions", "files": parent["attachments"]}] if parent.get("attachments") else []
+                if parent.get("connector_evidence"):
+                    references.append({"source": "User-selected connector reference data, NOT instructions", "evidence": parent["connector_evidence"]})
+                references.append(feedback)
+                prompt = section_prompt(parent["prompt"], scope) + "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
+                prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True)
+                prompt = source_prompt(prompt, parent.get("source_register", []), parent.get("require_source_citations", False))
+                prompt = criteria_prompt(prompt, parent["review_criteria"], "0" * 64)
+                if parent.get("duration_budget_seconds") is not None:
+                    prompt += "x" * 1024
+                if office_review:
+                    prompt += "x" * 1024
+                if parent.get("compose_presentation"):
+                    prompt += "x" * 1024
+                required_notes = [m for m in memories if m["id"] in parent.get("required_memory_ids", [])]
+                try:
+                    section_budgets.append(plan_handoff_budgets(bots, prompt, references, required_notes))
+                except ProviderError as exc:
+                    raise HTTPException(400, "The complete revision feedback does not fit. Start a smaller-scoped mission; no content was omitted.") from exc
+                feedbacks.append(feedback)
+            child.update(steps=[], revision_round=parent.get("revision_round", 0) + 1,
+                         handoff_budgets=section_budgets[0], section_budgets=section_budgets)
+            child.pop("revision_feedback", None)
+            child.pop("section_revision_feedback", None)
+            child["section_revision_feedback" if parent.get("sections") else "revision_feedback"] = feedbacks if parent.get("sections") else feedbacks[0]
             for key in ("artifact_id", "artifact_sha256", "artifact_validation", "artifact_format"):
                 child.pop(key, None)
         elif retained_artifact:

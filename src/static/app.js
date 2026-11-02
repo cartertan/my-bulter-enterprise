@@ -240,13 +240,14 @@ function renderDetail() {
     }));
   }
   if (state.capabilities?.draft_revision && mission.status === 'completed_with_issues'
-      && mission.review_criteria?.length && !mission.sections?.length && mission.steps.length === 2
+      && (!mission.sections?.length || state.capabilities?.section_revision)
+      && mission.review_criteria?.length && mission.steps.length === 2 * Math.max(1, mission.sections?.length || 0)
       && (mission.revision_round || 0) < 2 && (mission.resume_attempt || 0) < 3
       && !state.missions.some(m => m.parent_mission_id === mission.id)) {
-    head.append(button('Revise draft and review again', 'secondary', async () => {
+    head.append(button(mission.sections?.length ? 'Revise all sections and review again' : 'Revise draft and review again', 'secondary', async () => {
       const message = mission.cloud
-        ? 'Run the author and reviewer again with the complete prior draft and feedback? This sends the task, attachments, eligible notes and outputs to cloud providers and may incur charges.'
-        : 'Run the local author and reviewer again using the prior draft and feedback? The original attempt is preserved. At most two revision rounds are allowed.';
+        ? 'Run the author and reviewer again for every section with its complete prior draft and feedback? This sends the task, attachments, eligible notes and outputs to cloud providers and may incur charges.'
+        : 'Run the local author and reviewer again for every section using its prior draft and feedback? The original attempt is preserved. At most two revision rounds are allowed.';
       if (!window.confirm(message)) return;
       try {
         const child = await api(`missions/${mission.id}/revise`, 'POST', {cloud_consent: Boolean(mission.cloud), attachment_cloud_consent: Boolean(mission.cloud)});

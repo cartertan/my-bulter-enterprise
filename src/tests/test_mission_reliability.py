@@ -714,3 +714,62 @@ def test_citation_mode_requires_complete_sources_before_calls(tmp_path: Path, tr
             'duration_budget_seconds': 1800, 'review_criteria': ['Use supported claims'], 'require_source_citations': True})
         assert response.status_code == 400
         generate_mock.assert_not_called()
+
+@pytest.mark.parametrize('blocker', ['none', 'last_section_budget', 'section_history'])
+def test_section_revision_isolates_feedback_and_preflights_all_scopes(tmp_path: Path, blocker: str) -> None:
+    """Revise every section with its own full feedback, or schedule no calls at all."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'section-revision.sqlite3')
+    calls = []
+    drafts = {}
+    markers = ['UNIQUE_ALPHA_DRAFT', 'UNIQUE_BETA_DRAFT']
+
+    async def stream(provider, model, system, messages, **kwargs):
+        index = len(calls)
+        section = (index // 2) % 2
+        revision = index >= 4
+        content = messages[0]['content']
+        calls.append(content)
+        assert markers[1 - section] not in content
+        if index % 2 == 0:
+            if revision:
+                assert drafts[section] in content
+                assert 'Produce a complete replacement draft' in content
+            drafts[section] = f'{markers[section]} revision {int(revision)} explicit consent'
+            yield drafts[section]
+        else:
+            yield json.dumps({'draft_hash': draft_hash(drafts[section]), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass' if revision else 'fail',
+                 'reason': 'Synthetic section review', 'evidence_quotes': ['explicit consent']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft and review each scope',
+            'bulter_ids': [bot['id'] for bot in bots], 'sections': ['Issuance', 'Verification'],
+            'review_criteria': ['Include consent']})
+        assert response.status_code == 200
+        original = wait_mission(client)
+        assert original['status'] == 'completed_with_issues' and len(calls) == 4
+        if blocker == 'last_section_budget':
+            original['steps'][2]['output'] = 'x' * 24000
+        elif blocker == 'section_history':
+            original['steps'][3]['section_id'] = 'section-1'
+        app.state.store.put('mission', original)
+        response = client.post(f"/api/missions/{original['id']}/revise", json={})
+        if blocker != 'none':
+            assert response.status_code == (400 if blocker == 'last_section_budget' else 409)
+            assert len(calls) == 4 and len(app.state.store.all('mission')) == 1
+            return
+        assert response.status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed' and len(calls) == 8
+        assert child['revision_round'] == 1 and len(child['section_budgets']) == 2
+        assert len(child['section_revision_feedback']) == 2 and 'revision_feedback' not in child
+        assert child['acceptance_status'] == 'not_assessed'
+        for i in range(2):
+            assert child['steps'][i * 2 + 1]['review']['draft_hash'] == draft_hash(drafts[i])
+        assert app.state.store.get('mission', original['id']) == original
+        assert client.post(f"/api/missions/{child['id']}/revise", json={}).status_code == 409
+        assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
