@@ -453,6 +453,8 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
                 manifest['slides'] = manifest['slides'][:1]
             yield json.dumps(manifest)
         else:
+            assert hashlib.sha256(json.dumps(manifest).encode()).hexdigest() not in messages[0]['content']
+            assert 'DETERMINISTIC TIMING CHECK' in messages[0]['content']
             refs = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
             projection = refs['previous_bulter_outputs'][-1]['output']
             assert 'Holder consents' in projection

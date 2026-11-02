@@ -774,3 +774,18 @@ def test_section_revision_isolates_feedback_and_preflights_all_scopes(tmp_path: 
         assert app.state.store.get('mission', original['id']) == original
         assert client.post(f"/api/missions/{child['id']}/revise", json={}).status_code == 409
         assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('compose', [False, True])
+def test_timing_prompt_uses_one_complete_mode_specific_example(compose: bool) -> None:
+    """Composition must not teach the author an outline that omits flow geometry."""
+    import json
+    from src.app import timing_prompt, TimedPresentation
+    prompt = timing_prompt('Use exactly 45 seconds of speaking and 15 seconds of discussion.', 60, True, compose)
+    example = prompt.split('Return only JSON matching this structure: ', 1)[1].split('. Example values', 1)[0]
+    outline = TimedPresentation.model_validate(json.loads(example))
+    assert bool(outline.slides[0].flow_steps) == compose
+    assert '45 seconds of speaking and 15 seconds of discussion' in prompt
+    assert 'not the sample values' in prompt
+    assert timing_prompt('Review the actual artifact.', 60, False, compose).count('matching this structure') == 0
+    assert timing_prompt('No timed output requested.', None, True, compose) == 'No timed output requested.'

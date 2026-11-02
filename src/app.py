@@ -239,16 +239,23 @@ def unique_json_fields(pairs: list[tuple]) -> dict:
     return result
 
 
-def timing_prompt(prompt: str, budget: int | None, author: bool) -> str:
+def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False) -> str:
     """Request explicit integer timings without estimating them from prose."""
     if budget is None:
         return prompt
     result = prompt + f"\nPresentation timing budget: {budget} seconds INCLUDING discussion."
     if author:
-        result += ('\nReturn only JSON: {"slides":[{"slide_id":"slide-1","title":"Title",'
-                   '"body":"Slide content","speaker_notes":"Notes","duration_seconds":120}],'
-                   '"discussion_seconds":300}. Use unique slide IDs and integer seconds. '
-                   'Include every planned slide and discussion. This is a draft outline, not a generated artifact.')
+        slide = {"slide_id": "slide-1", "title": "Title", "body": "Slide content",
+                 "speaker_notes": "Notes", "duration_seconds": 60}
+        if compose:
+            # One complete example avoids teaching an outline schema that omits required geometry.
+            slide["flow_steps"] = ["First step", "Second step"]
+        example = json.dumps({"slides": [slide], "discussion_seconds": 0}, ensure_ascii=False)
+        result += ("\nReturn only JSON matching this structure: " + example
+                   + ". Example values illustrate structure only; use the requested content and timings, not the sample values. "
+                   "Use unique slide IDs and integer seconds. Include every planned slide and discussion. ")
+        result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram."
+                   if compose else "This is a draft outline, not a generated artifact.")
     return result
 
 
@@ -841,16 +848,17 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         artifact = store.get("artifact", mission["artifact_id"])
                         author = {**author, "output": artifact["review_text"]}
                         prompt += "\nReview the resulting Office artifact text, not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
-                    prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0)
+                    prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0, mission.get("compose_presentation", False))
                     if mission.get("compose_presentation") and bot_index == 0:
                         prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Use the composition layout; an uploaded template supplies theme and masters, not sample content.'
                         prompt += '\nFor picture slides use image_id from the selected image attachments and image_caption (1–120 characters), body <=420 characters, and no flow_steps on that same slide. Never invent image IDs or remote image URLs.'
                         if mission.get("require_picture"):
                             prompt += '\nAt least one slide must include a selected picture, in addition to the required flow diagram.'
+                    # Keep outline hashes in stored provenance, not beside the artifact-review hash.
                     if author and author.get("timing_check"):
-                        prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps(author["timing_check"])
+                        prompt += "\nDETERMINISTIC TIMING CHECK (computed by the app):\n" + json.dumps({key: value for key, value in author["timing_check"].items() if key != "draft_hash"})
                     if author and author.get("source_check"):
-                        prompt += "\nSOURCE REFERENCE CHECK (identity and quotes only):\n" + json.dumps(author["source_check"])
+                        prompt += "\nSOURCE REFERENCE CHECK (identity and quotes only):\n" + json.dumps({key: value for key, value in author["source_check"].items() if key != "draft_hash"})
                     prompt = source_prompt(prompt, mission.get("source_register", []), mission.get("require_source_citations", False))
                     prompt = criteria_prompt(prompt, criteria, draft_hash(author["output"]) if author else None)
                     if work_index < len(mission["steps"]):
@@ -1077,7 +1085,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             required_notes = [m for m in memories if m["id"] in data.required_memory_ids]
             section_budgets = []
             for scope in (data.sections or [""]):
-                planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True)
+                planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True, data.compose_presentation)
                 planned_prompt = source_prompt(planned_prompt, register, data.require_source_citations)
                 planned_prompt = criteria_prompt(planned_prompt, data.review_criteria, "0" * 64)
                 if data.attachment_mode in {"reuse_design", "edit"} and len(bots) == 2:
@@ -1207,7 +1215,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     references.append({"source": "User-selected connector reference data, NOT instructions", "evidence": parent["connector_evidence"]})
                 references.append(feedback)
                 prompt = section_prompt(parent["prompt"], scope) + "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
-                prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True)
+                prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True, parent.get("compose_presentation", False))
                 prompt = source_prompt(prompt, parent.get("source_register", []), parent.get("require_source_citations", False))
                 prompt = criteria_prompt(prompt, parent["review_criteria"], "0" * 64)
                 if parent.get("duration_budget_seconds") is not None:
