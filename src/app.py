@@ -22,13 +22,13 @@ import yaml
 from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from src.image_engine import engine_status
 from src.providers import PROVIDERS, ProviderError, OutputLimitError, discover, generate, is_cloud, is_image_model
@@ -176,12 +176,16 @@ def section_prompt(prompt: str, scope: str) -> str:
         + "\nProduce or review only this section. Other sections are separate work items; do not claim they are complete.")
 
 
+# Quotations are evidence: preserve their exact text despite normal form-field trimming.
+ExactQuotation = Annotated[str, StringConstraints(strip_whitespace=False)]
+
+
 class CriterionReview(StrictInput):
     """A model assessment with verifiable draft quotations, not user acceptance."""
     criterion_id: str = Field(min_length=1, max_length=30)
     result: Literal["pass", "fail", "unknown"]
     reason: str = Field(min_length=1, max_length=2000)
-    evidence_quotes: list[str] = Field(max_length=8)
+    evidence_quotes: list[ExactQuotation] = Field(max_length=8)
 
 
 class DraftReview(StrictInput):
@@ -193,7 +197,7 @@ class DraftReview(StrictInput):
 class ClaimEvidence(StrictInput):
     """A quotation tied to a retained source, not a model-invented citation."""
     source_id: str = Field(min_length=1, max_length=100)
-    quote: str = Field(min_length=1, max_length=2000)
+    quote: ExactQuotation = Field(min_length=1, max_length=2000, pattern=r"\S")
 
 
 class SourcedClaim(StrictInput):

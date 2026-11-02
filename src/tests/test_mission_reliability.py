@@ -909,3 +909,92 @@ def test_author_outline_errors_preserve_privacy_and_actionable_guidance(variant:
     assert 'Author outline is invalid' in message and 'positive integer' in message
     assert 'PRIVATE_PAYLOAD_MARKER' not in message
     assert 'input_value' not in message and 'pydantic.dev' not in message
+
+
+@pytest.mark.parametrize('quote', ['  explicit consent  ', '\texplicit consent\n', '\u00a0explicit consent\u00a0'])
+def test_source_quotations_are_not_trimmed(quote: str) -> None:
+    """Source references must match the submitted quotation, including edge whitespace."""
+    import json
+    from src.app import parse_presentation_outline, validate_sources
+    outline = timed_outline(120, 30)
+    outline['slides'][0]['claims'] = [{'text': 'Consent is required',
+        'evidence': [{'source_id': 'source-1', 'quote': quote}]}]
+    output = json.dumps(outline)
+    assert parse_presentation_outline(output).slides[0].claims[0].evidence[0].quote == quote
+    assert validate_sources(output, [], [{'id': 'source-1', 'content': quote}], True)['state'] == 'references_valid'
+    assert validate_sources(output, [], [{'id': 'source-1', 'content': quote.strip()}], True)['state'] == 'invalid'
+
+
+@pytest.mark.parametrize('quote', ['  explicit consent  ', '\texplicit consent\n', '\u00a0explicit consent\u00a0'])
+def test_peer_quotations_are_not_trimmed(quote: str) -> None:
+    """Peer evidence cannot pass after silently removing invented whitespace."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    author = {'bulter_id': 'author', 'section_id': 'whole', 'draft_revision': 1, 'status': 'completed'}
+    for text, expected in [(quote, 'criteria_pass'), (quote.strip(), 'invalid')]:
+        author['output'] = text
+        output = json.dumps({'draft_hash': draft_hash(text), 'criteria': [{'criterion_id': 'criterion-1',
+            'result': 'pass', 'reason': 'Consent is present', 'evidence_quotes': [quote]}]})
+        result = validate_draft_review(output, author, ['Require consent'], 'reviewer')
+        assert result['state'] == expected
+        if expected == 'criteria_pass':
+            assert result['criteria'][0]['evidence_quotes'] == [quote]
+        else:
+            assert result['error_code'] == 'review_evidence'
+
+
+@pytest.mark.parametrize('blank', [' ', '\t\n', '\u00a0'])
+def test_untrimmed_source_quotes_still_reject_blank_evidence(blank: str) -> None:
+    """Disabling quote normalization must not allow whitespace-only citations."""
+    import json
+    from src.app import validate_sources
+    outline = timed_outline(120, 30)
+    outline['slides'][0]['claims'] = [{'text': 'Consent is required',
+        'evidence': [{'source_id': 'source-1', 'quote': blank}]}]
+    assert validate_sources(json.dumps(outline), [], [{'id': 'source-1', 'content': blank}], True)['state'] == 'invalid'
+
+
+@pytest.mark.parametrize('inexact', ['source', 'review'])
+def test_inexact_quotation_blocks_mission_pass(tmp_path: Path, inexact: str) -> None:
+    """A model pass cannot override quotation text absent from the retained evidence."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'quotation.sqlite3')
+    outline = timed_outline(120, 30)
+    claim = {'text': 'Consent is required', 'evidence': [{'source_id': '',
+        'quote': '  explicit consent  ' if inexact == 'source' else 'explicit consent'}]}
+    outline['slides'][0]['claims'] = [claim]
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Submit an inexact quote in either author citations or peer evidence."""
+        calls.append(model)
+        draft = json.dumps(outline)
+        if len(calls) == 1:
+            yield draft
+        else:
+            quote = '  Consent is required  ' if inexact == 'review' else 'Consent is required'
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': 'pass', 'reason': 'Synthetic false positive', 'evidence_quotes': [quote]}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        source = client.post('/api/attachments?filename=source.txt', content=b'Issuance requires explicit consent.').json()
+        claim['evidence'][0]['source_id'] = source['id']
+        response = client.post('/api/missions', json={'prompt': 'Prepare a sourced presentation',
+            'bulter_ids': [bot['id'] for bot in bots], 'attachment_ids': [source['id']],
+            'duration_budget_seconds': 1800, 'review_criteria': ['Use supported claims'], 'require_source_citations': True})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert len(calls) == 2 and mission['status'] == 'completed_with_issues'
+        review = mission['steps'][1]['review']
+        if inexact == 'source':
+            assert mission['steps'][0]['source_check']['state'] == 'invalid'
+            assert review['blocking_checks'] == ['source_references']
+            assert review['state'] == 'needs_revision'
+        else:
+            assert mission['steps'][0]['source_check']['state'] == 'references_valid'
+            assert review['state'] == 'invalid' and review['error_code'] == 'review_evidence'
+        assert mission['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400

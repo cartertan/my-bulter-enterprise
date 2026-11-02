@@ -318,3 +318,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - New artifacts record projection version 2; inspection and recovery recompute that version while existing unversioned artifacts retain their original projection. Complete review text still must fit the reserved budget; notes are never silently truncated.
 - Validation: 353 tests pass, all three JavaScript syntax checks and the 76-file package gate pass. Regression coverage verifies opt-in extraction, placeholder exclusion, peer evidence quoted from speaker notes, and exact inspection downloads with the new projection; existing legacy inspection/recovery tests also pass.
 - Remaining: section assembly, bounded online research, broader browser/model/template validation and final end-to-end acceptance. This closes a text-review coverage gap, not rendered or factual acceptance; all issues remain open.
+
+
+### REV-001 exact quotation preservation: 2 November 2026
+
+- Found and reproduced silent trimming in the shared form-input configuration: source and reviewer quotations lost leading/trailing whitespace before exact-match validation. This could accept a submitted quotation that did not occur verbatim in the retained source or draft, and persisted peer evidence differed from the model response.
+- Evidence strings now explicitly preserve whitespace while ordinary form fields retain their existing normalization. Source quotes still reject whitespace-only values; review quote bounds and safe error codes remain enforced. No dependency or network behavior changed.
+- Validation: six regression cases failed before the fix. All 364 tests now pass, alongside three JavaScript syntax checks and the 76-file package gate. Eleven added cases cover spaces, tabs/newlines, Unicode whitespace, blank rejection, exact persisted peer evidence, and API missions where an inexact source or review quotation blocks a model pass and export.
+- This is exact-text integrity, not factual truth or entailment. Existing mission history is not rewritten or retroactively revalidated. Section assembly, online research, broader browser/model/template checks and final end-to-end acceptance remain open.
