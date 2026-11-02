@@ -904,3 +904,54 @@ def test_speaker_notes_projection_is_opt_in_and_excludes_furniture() -> None:
     assert office_paragraphs(buffer.getvalue(), "test.pptx") == []
     assert office_paragraphs(buffer.getvalue(), "test.pptx", include_notes=True) == [
         "Speaker notes: Private speaker detail", "Speaker notes: Second paragraph"]
+
+
+def test_composed_citations_retain_source_url_and_recording_metadata() -> None:
+    """Readers can open the cited page and inspect honestly labelled saved provenance."""
+    from src.presentation_builder import compose_presentation
+    source = {'source_id': 'source-1', 'title': 'Synthetic wallet guidance',
+              'source_url': 'https://example.com/wallet', 'recorded_at': '2026-11-03T00:00:00+00:00',
+              'provenance': 'user_provided; page_not_fetched'}
+    unused = {'source_id': 'unused', 'title': 'Unused reference', 'source_url': 'https://example.com/unused'}
+    slide = {'title': 'Consent', 'body': 'Obtain explicit consent', 'speaker_notes': 'Explain the choice.',
+             'duration_seconds': 60, 'claims': [{'evidence': [{'source_id': 'source-1', 'quote': 'Explicit consent is required.'}]}]}
+    data = compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [source, unused])
+    deck = Presentation(io.BytesIO(data))
+    links = [run.hyperlink.address for shape in deck.slides[0].shapes if shape.has_text_frame
+             for paragraph in shape.text_frame.paragraphs for run in paragraph.runs if run.hyperlink.address]
+    assert links == [source['source_url']]
+    notes = deck.slides[0].notes_slide.notes_text_frame.text
+    for value in (source['title'], source['source_url'], source['recorded_at'], source['provenance'], 'Explicit consent is required.'):
+        assert value in notes
+    assert 'Recorded at (not retrieval/publication date)' in notes
+    assert 'https://example.com/unused' not in notes
+    projection = '\n'.join(office_paragraphs(data, 'draft.pptx', include_notes=True))
+    assert source['source_url'] in projection
+    assert source['provenance'] in projection
+
+
+@pytest.mark.parametrize('url', ['http://example.com', 'https://user:password@example.com', 'javascript:alert(1)'])
+def test_composed_citation_revalidates_url_before_creating_links(url: str) -> None:
+    """Stored or direct caller metadata cannot bypass the Office hyperlink policy."""
+    from src.presentation_builder import compose_presentation
+    slide = {'title': 'Consent', 'body': 'Consent matters', 'speaker_notes': '', 'duration_seconds': 60,
+             'claims': [{'evidence': [{'source_id': 's', 'quote': 'Evidence'}]}]}
+    with pytest.raises(ValueError, match='source URL'):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0},
+                             [{'source_id': 's', 'title': 'Synthetic source', 'source_url': url}])
+
+
+
+def test_multiline_citation_labels_keep_the_correct_links() -> None:
+    """A wrapped source label must not shift the next source's hyperlink target."""
+    from src.presentation_builder import compose_presentation
+    sources = [{'source_id': 'a', 'title': 'First\ncontinued', 'source_url': 'https://example.com/first'},
+               {'source_id': 'b', 'title': 'Second', 'source_url': 'https://example.com/second'}]
+    slide = {'title': 'Consent', 'body': 'Consent matters', 'speaker_notes': '', 'duration_seconds': 60,
+             'claims': [{'evidence': [{'source_id': s['source_id'], 'quote': 'Evidence'} for s in sources]}]}
+    data = compose_presentation({'slides': [slide], 'discussion_seconds': 0}, sources)
+    deck = Presentation(io.BytesIO(data))
+    links = [(paragraph.text, run.hyperlink.address) for shape in deck.slides[0].shapes if shape.has_text_frame
+             for paragraph in shape.text_frame.paragraphs for run in paragraph.runs if run.hyperlink.address]
+    assert links == [('S1: First', sources[0]['source_url']), ('continued', sources[0]['source_url']),
+                     ('S2: Second', sources[1]['source_url'])]

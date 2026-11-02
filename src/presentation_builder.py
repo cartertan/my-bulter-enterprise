@@ -17,8 +17,9 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.util import Inches, Pt
+from pptx.shapes.autoshape import Shape
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
-from src.attachments import office_paragraphs
+from src.attachments import office_paragraphs, citation_target_allowed
 
 
 def compose_presentation(manifest: dict, sources: list[dict], template: bytes | None = None,
@@ -60,6 +61,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         """Scale the composition grid to the retained template dimensions."""
         return Inches(x * x_scale), Inches(y * y_scale), Inches(width * x_scale), Inches(height * y_scale)
     source_names = {source['source_id']: f"S{index + 1}: {source['title']}" for index, source in enumerate(sources)}
+    source_metadata = {source['source_id']: source for source in sources}
     images = images or {}
 
     def configure_text(shape, text: str, size: int, color: str) -> None:
@@ -83,10 +85,11 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
             paragraph.font.size = Pt(font_points)
             paragraph.font.color.rgb = RGBColor.from_string(color)
 
-    def textbox(slide, x: float, y: float, width: float, height: float, text: str, size: int, color: str) -> None:
+    def textbox(slide, x: float, y: float, width: float, height: float, text: str, size: int, color: str) -> Shape:
         """Add editable text with explicit typography and no automatic shrink."""
         box = slide.shapes.add_textbox(*bounds(x, y, width, height))
         configure_text(box, text, size, color)
+        return box
 
     for index, item in enumerate(manifest['slides']):
         flow = item.get('flow_steps', [])
@@ -103,6 +106,10 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         citations = sorted({entry['source_id'] for claim in item.get('claims', []) for entry in claim['evidence']})
         if len(citations) > 4 or any(identifier not in source_names for identifier in citations):
             raise ValueError('Slide citations must identify at most four registered sources.')
+        for identifier in citations:
+            url = source_metadata[identifier].get('source_url')
+            if url and (not isinstance(url, str) or not citation_target_allowed(url)):
+                raise ValueError('A cited source URL does not satisfy the HTTPS citation policy.')
         slide = deck.slides.add_slide(layout)
         for placeholder in list(slide.placeholders):
             placeholder._element.getparent().remove(placeholder._element)
@@ -144,9 +151,28 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         citation_text = '\n'.join(source_names[identifier] for identifier in citations)
         if len(citation_text) > 320:
             raise ValueError('Citation labels exceed the slide footer budget; shorten source titles.')
-        textbox(slide, .7, 5.85, 11.8, .8, citation_text, 10, ink)
+        citation_box = textbox(slide, .7, 5.85, 11.8, .8, citation_text, 10, ink)
+        paragraph_index = 0
+        for identifier in citations:
+            label = source_names[identifier].replace('\r\n', '\n').replace('\r', '\n')
+            count = len(label.split('\n'))
+            url = source_metadata[identifier].get('source_url')
+            if url:
+                for paragraph in citation_box.text_frame.paragraphs[paragraph_index:paragraph_index + count]:
+                    for run in paragraph.runs:
+                        run.hyperlink.address = url
+            paragraph_index += count
         textbox(slide, .7, 6.7, 11.8, .3, f"{index + 1} / {len(manifest['slides'])}   |   {item['duration_seconds']} seconds   |   Draft — validation pending", 10, ink)
         provenance = '\n'.join(f"{citation['source_id']}: {citation['quote']}" for claim in item.get('claims', []) for citation in claim['evidence'])
+        metadata_notes = []
+        for identifier in citations:
+            source = source_metadata[identifier]
+            metadata_notes.append(f"{source_names[identifier]} | Source ID: {identifier}"
+                + f"\nSource URL: {source.get('source_url') or 'not supplied'}"
+                + f"\nRecorded at (not retrieval/publication date): {source.get('recorded_at') or 'not recorded'}"
+                + f"\nProvenance: {source.get('provenance') or 'unverified'}")
+        # Put full metadata in notes, avoiding URL overflow in the visible citation panel.
+        provenance += '\nSource metadata:\n' + '\n'.join(metadata_notes)
         slide.notes_slide.notes_text_frame.text = (item['speaker_notes'] + f"\nSpeaking time: {item['duration_seconds']} seconds."
             + f"\nPresentation discussion: {manifest['discussion_seconds']} seconds (once, not per slide).\nSource evidence:\n" + provenance + image_note)
     output = io.BytesIO()
