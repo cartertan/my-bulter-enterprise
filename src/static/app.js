@@ -176,6 +176,7 @@ function renderTeam() {
   $('#require-picture-row').hidden = !state.capabilities?.picture_composition;
   $('#compose-presentation-row').hidden = !state.capabilities?.presentation_composition;
   $('#source-citations-row').hidden = !state.capabilities?.source_citations;
+  $('#exact-constraints-row').hidden = !state.capabilities?.exact_presentation_constraints;
   $('#timing-input-row').hidden = !state.capabilities?.timing_validation;
   $('#review-criteria-row').hidden = !state.capabilities?.structured_review;
   $('#section-input-row').hidden = !state.capabilities?.section_checkpoints;
@@ -329,6 +330,8 @@ function renderDetail() {
     if (step.timing_check) {
       const check = step.timing_check;
       block.append(el('p', 'help', `Timing: ${check.state} · ${check.total_seconds ?? 'unverified'} / ${check.budget_seconds} seconds including discussion`));
+      if (check.expected_slide_count != null) block.append(el('p', 'help', `Slides: ${check.slide_count ?? 'unverified'}; required exactly ${check.expected_slide_count}.`));
+      if (check.exact_duration_seconds != null) block.append(el('p', 'help', `Required total: exactly ${check.exact_duration_seconds} seconds including discussion.`));
       if (check.error) block.append(el('p', 'error', check.error));
     }
     if (step.review) {
@@ -474,11 +477,14 @@ $('#mission-form').addEventListener('submit', async (event) => {
     const pictures = state.capabilities?.picture_composition && $('#require-picture').checked ? {require_picture: true} : {};
     const composition = state.capabilities?.presentation_composition && $('#compose-presentation').checked ? {compose_presentation: true} : {};
     const sourceCitations = state.capabilities?.source_citations && $('#require-source-citations').checked ? {require_source_citations: true} : {};
+    const exactConstraints = state.capabilities?.exact_presentation_constraints ? {
+      ...($('#expected-slide-count').value ? {expected_slide_count: Number($('#expected-slide-count').value)} : {}),
+      ...($('#exact-duration').value ? {exact_duration_seconds: Number($('#exact-duration').value)} : {})} : {};
     const timing = state.capabilities?.timing_validation && $('#duration-budget').value ? {duration_budget_seconds: Number($('#duration-budget').value) * 60} : {};
     const reviewCriteria = state.capabilities?.structured_review ? {review_criteria: $('#review-criteria').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
-    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...sourceCitations, ...composition, ...pictures, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
+    const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...exactConstraints, ...sourceCitations, ...composition, ...pictures, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();
     selectedMission = mission.id; $('#cloud-consent').checked = false; $('#review-partial-output').checked = false; await refresh(); $('#mission-detail').scrollIntoView({behavior: 'smooth'});
   } catch (error) { notify(error.message); renderTeam(); }

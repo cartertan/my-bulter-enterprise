@@ -825,3 +825,64 @@ def test_review_schema_is_fresh_and_bound_to_requested_criteria() -> None:
     assert second['$defs']['CriterionReview']['properties']['criterion_id']['enum'] == ['criterion-1']
     assert first['additionalProperties'] is False
     assert first['$defs']['CriterionReview']['additionalProperties'] is False
+
+@pytest.mark.parametrize('count,total,expected', [(1, 60, 'pass'), (2, 60, 'invalid'), (1, 59, 'invalid'), (1, 61, 'invalid')])
+def test_exact_presentation_constraints_include_discussion(count: int, total: int, expected: str) -> None:
+    """Being within the budget does not satisfy an exact requested schedule."""
+    import json
+    from src.app import validate_timing
+    check = validate_timing(json.dumps(timed_outline(45, 15)), 120,
+                            expected_slide_count=count, exact_duration_seconds=total)
+    assert check['state'] == expected
+    assert check['total_seconds'] == 60 and check['overrun_seconds'] == 0
+    assert check['expected_slide_count'] == count and check['exact_duration_seconds'] == total
+
+
+@pytest.mark.parametrize('constraints', [
+    {'expected_slide_count': True}, {'expected_slide_count': 0}, {'expected_slide_count': 61},
+    {'exact_duration_seconds': '60'}, {'exact_duration_seconds': 121},
+    {'expected_slide_count': 2, 'exact_duration_seconds': 1}])
+def test_invalid_exact_constraints_reject_before_execution(constraints: dict) -> None:
+    from src.app import MissionInput
+    with pytest.raises(ValueError):
+        MissionInput(prompt='Synthetic', bulter_ids=['a', 'b'], review_criteria=['Check'],
+                     duration_budget_seconds=120, **constraints)
+    with pytest.raises(ValueError):
+        MissionInput(prompt='Synthetic', bulter_ids=['a', 'b'], expected_slide_count=1)
+
+
+def test_exact_constraint_failure_overrides_model_pass_and_survives_revision(tmp_path: Path) -> None:
+    """A within-budget but wrong schedule cannot pass; revisions retain the constraints."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'exact-schedule.sqlite3')
+    draft = json.dumps(timed_outline(90, 0))
+    calls = []
+    async def stream(provider, model, system, messages, **kwargs):
+        calls.append(messages[0]['content'])
+        assert 'Required slide count: exactly 1' in calls[-1]
+        assert 'Required total duration: exactly 60 seconds' in calls[-1]
+        if len(calls) % 2:
+            schema = kwargs['options']['response_schema']['properties']['slides']
+            assert schema['minItems'] == schema['maxItems'] == 1
+            yield draft
+        else:
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': 'pass', 'reason': 'Synthetic false positive', 'evidence_quotes': ['Explicit consent']}]})
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Synthetic schedule',
+            'bulter_ids': [b['id'] for b in bots], 'review_criteria': ['Consent'],
+            'duration_budget_seconds': 120, 'expected_slide_count': 1, 'exact_duration_seconds': 60})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == 'completed_with_issues'
+        assert mission['steps'][0]['timing_check']['constraint_mismatches'] == ['exact_duration']
+        assert mission['steps'][1]['review']['state'] == 'needs_revision'
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+        assert client.post(f"/api/missions/{mission['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['expected_slide_count'] == 1 and child['exact_duration_seconds'] == 60
+        assert child['status'] == 'completed_with_issues' and child['acceptance_status'] == 'not_assessed'
+        assert len(calls) == 4
