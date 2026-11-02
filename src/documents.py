@@ -28,6 +28,9 @@ def extract_text(data: bytes, filename: str) -> str:
         if suffix in {".docx", ".pptx"}:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 members = archive.infolist()
+                # ZIP permits duplicate names; Office readers may select different versions.
+                if len({member.filename for member in members}) != len(members):
+                    raise ValueError("Office document contains duplicate package parts. Resave it as a clean Office file.")
                 if len(members) > 2000 or sum(m.file_size for m in members) > 40 * 1024 * 1024:
                     raise ValueError("Office document is too large after decompression.")
                 if any("vbaproject" in m.filename.lower() for m in members):

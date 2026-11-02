@@ -1047,3 +1047,35 @@ def test_ambiguous_edit_stops_before_peer_review(tmp_path: Path, monkeypatch, ki
         assert mission['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{mission['id']}/export/{kind}").status_code == 400
         assert base64.b64decode(app.state.store.get('attachment', upload['id'])['raw']) == original
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+def test_duplicate_office_parts_are_rejected_consistently(tmp_path: Path, kind: str) -> None:
+    """Conflicting ZIP entries must not resolve differently across source and artifact readers."""
+    import warnings
+    from src.documents import extract_text
+    original = office(kind, 'Original example')
+    part = 'word/document.xml' if kind == 'docx' else 'ppt/slides/slide1.xml'
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(original)) as source, zipfile.ZipFile(output, 'w') as target:
+        for info in source.infolist():
+            target.writestr(info, source.read(info.filename))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            target.writestr(part, source.read(part).replace(b'Original example', b'Conflicting version'))
+    ambiguous = output.getvalue()
+    with pytest.raises(ValueError, match='duplicate'):
+        template_output(ambiguous, 'source.' + kind, completed('Synthetic response'))
+    for reader in (extract_text, office_paragraphs, parse):
+        with pytest.raises(ValueError, match='duplicate'):
+            reader(ambiguous, 'source.' + kind)
+    with pytest.raises(ValueError, match='invalid or ambiguous'):
+        edited_output(ambiguous, 'source.' + kind,
+                      completed('{"replacements":[{"old":"Conflicting version","new":"Replacement"}]}'))
+    app = create_app(tmp_path / 'duplicate-parts.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/attachments?filename=source.' + kind, content=ambiguous)
+        assert response.status_code == 400
+        assert 'duplicate' in response.json()['detail']
+        assert app.state.store.all('attachment') == []

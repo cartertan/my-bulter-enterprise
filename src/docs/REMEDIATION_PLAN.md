@@ -382,3 +382,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Credential operations recheck both active execution and admission after acquiring their own lock, preserving the existing protection against changes between request parsing and Keychain access. Ordinary future bot edits retain their existing snapshot semantics. No credential backend, config or actual key was changed.
 - Validation: all five new concurrency cases failed before the fix. All 404 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Tests suspend synthetic vision preflight, attempt each protected operation, verify 409, assert credential mocks were never invoked and retain the selected bot. Existing credential and ordinary mutation tests pass.
 - This remains single-process coordination, not distributed locking or filesystem-level prevention of external vault changes. Section assembly, bounded research, representative model/template/render validation and final end-to-end acceptance remain open. No acceptance gate closed.
+
+
+### ART-001 package identity ambiguity: 3 November 2026
+
+- Office ingestion now rejects ZIP packages containing duplicate entry names. Previously a package with conflicting versions of the same document/slide XML was accepted, leaving interpretation dependent on a reader's duplicate-entry behavior. The shared ingestion check also protects editable-paragraph projection, exact edits and template exports before output construction.
+- The error recommends resaving a clean Office file without echoing source text or internal filenames. No files are repaired, deleted or rewritten automatically. Existing size/macro checks remain in force.
+- Validation: both DOCX/PPTX regressions failed before the fix. All 406 tests pass, three JavaScript syntax checks and the 76-file package gate pass. The two new cases exercise extraction, attachment parsing, review projection, edit/template output and authenticated upload rejection without persisting an attachment. Existing valid Office round trips pass.
+- This check rejects duplicate names; it is not a complete Office format/security certification. Section assembly, bounded research, representative model/template/render checks and final end-to-end acceptance remain open. No private source files or paid calls were used.
