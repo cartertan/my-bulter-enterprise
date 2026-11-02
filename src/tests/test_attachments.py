@@ -770,6 +770,9 @@ def test_unaccepted_draft_inspection_preserves_export_gates(tmp_path: Path, kind
         app.state.store.put('artifact', artifact)
     with TestClient(app) as client:
         client.headers['x-bulter-token'] = app.state.csrf
+        if problem == 'running':
+            # Set after startup so this tests an active run, not restart interruption.
+            app.state.store.put('mission', mission)
         response = client.get('/api/missions/mission-1/artifact/draft')
         assert response.status_code == (200 if problem == 'none' else 409)
         if problem == 'none':
@@ -780,3 +783,35 @@ def test_unaccepted_draft_inspection_preserves_export_gates(tmp_path: Path, kind
             assert 'review-only-draft' in response.headers['content-disposition']
             assert app.state.store.get('mission', mission['id'])['acceptance_status'] == 'not_assessed'
         assert client.get('/api/missions/mission-1/export/' + kind).status_code == 400
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('author_status', ['completed', 'running', 'partial'])
+def test_restart_keeps_complete_drafts_inspectable_without_acceptance(tmp_path: Path, kind: str, author_status: str) -> None:
+    """A restart during review must not hide a complete artifact or expose partial work."""
+    import hashlib
+    raw = office(kind, 'Synthetic draft before restart')
+    digest = hashlib.sha256(raw).hexdigest()
+    database = tmp_path / 'restart-draft.sqlite3'
+    original = create_app(database)
+    mission = {'id': 'restart-mission', 'status': 'running', 'artifact_id': 'retained-artifact',
+               'artifact_sha256': digest, 'artifact_format': kind, 'acceptance_status': 'not_assessed',
+               'steps': [{'status': author_status}, {'status': 'running'}]}
+    artifact = {'id': 'retained-artifact', 'mission_id': mission['id'], 'format': kind,
+                'sha256': digest, 'raw': base64.b64encode(raw).decode(),
+                'review_text': json.dumps({'artifact_sha256': digest,
+                    'paragraphs': office_paragraphs(raw, 'draft.' + kind)}, ensure_ascii=False)}
+    original.state.store.put('mission', mission)
+    original.state.store.put('artifact', artifact)
+    restarted = create_app(database)
+    with TestClient(restarted) as client:
+        client.headers['x-bulter-token'] = restarted.state.csrf
+        restored = restarted.state.store.get('mission', mission['id'])
+        assert restored['status'] == 'interrupted'
+        response = client.get('/api/missions/restart-mission/artifact/draft')
+        assert response.status_code == (200 if author_status == 'completed' else 409)
+        if author_status == 'completed':
+            assert response.content == raw and response.headers['x-artifact-sha256'] == digest
+        assert client.get('/api/missions/restart-mission/export/' + kind).status_code == 400
+        assert restarted.state.store.get('mission', mission['id']) == restored
+        assert restored['acceptance_status'] == 'not_assessed'

@@ -624,7 +624,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         mission = store.get("mission", identifier)
         if not mission:
             raise HTTPException(404, "Mission not found.")
-        if (mission.get("status") not in {"completed", "completed_with_issues", "failed", "cancelled"}
+        if (mission.get("status") not in {"completed", "completed_with_issues", "failed", "cancelled", "interrupted"}
                 or not mission.get("steps") or mission["steps"][0].get("status") != "completed"):
             raise HTTPException(409, "Only a finished attempt with a complete author artifact can be inspected.")
         artifact = store.get("artifact", mission.get("artifact_id", ""))

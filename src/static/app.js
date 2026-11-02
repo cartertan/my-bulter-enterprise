@@ -256,7 +256,7 @@ function renderDetail() {
     }));
   }
   if (state.capabilities?.artifact_draft_inspection && mission.artifact_id
-      && ['completed', 'completed_with_issues', 'failed', 'cancelled'].includes(mission.status)
+      && ['completed', 'completed_with_issues', 'failed', 'cancelled', 'interrupted'].includes(mission.status)
       && mission.steps[0]?.status === 'completed') {
     head.append(button('Download draft for inspection (not accepted)', 'secondary', async () => {
       try {

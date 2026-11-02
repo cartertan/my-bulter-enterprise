@@ -242,3 +242,10 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Original attempts remain immutable; new section reviews bind the new drafts. Passing reviews stop further revisions. This is not automatic orchestration, selective failed-section retry or Office artifact assembly; section Office exports remain blocked.
 - Validation: 319 tests pass, three JavaScript syntax checks and the 76-file package gate pass. New end-to-end API cases verify section feedback isolation, all-section preflight, mismatched history rejection, immutable parent attempts, fresh review hashes and unchanged export/acceptance gates. Existing whole-draft revision and Office recovery tests still pass.
 - Remaining: browser/representative-model validation, section artifact assembly, bounded online research, actual-template rendering and final acceptance. No user intervention is required for this slice.
+
+### REL-002 / ART-002 restart-safe draft inspection: 2 November 2026
+
+- Fixed a restart edge case in the inspection workflow: startup marks active missions interrupted, which previously hid a complete, retained author artifact even if only the reviewer was interrupted. The API and UI now permit inspection-only download for interrupted attempts with a complete author step.
+- Ownership, format, artifact hash and projection checks remain mandatory. Running or partial authors remain blocked, as does ordinary accepted-output export. Inspection does not resume inference, change mission state or grant acceptance.
+- Validation: 325 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Six fresh-app restart regressions cover DOCX/PPTX with completed, running and partial author steps. The active-run regression now sets its state after startup so it explicitly distinguishes a running mission from an interrupted one.
+- Remaining: browser/real-model validation, section artifact assembly, bounded online research and actual-template/end-to-end validation. No acceptance criteria were closed by this change.
