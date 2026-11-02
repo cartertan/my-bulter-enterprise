@@ -137,3 +137,50 @@ def test_linked_vault_is_rejected(tmp_path: Path) -> None:
         document = client.post("/api/documents?filename=test.txt", content=b"Test evidence").json()
         assert client.post(f"/api/documents/{document['id']}/approve").status_code == 400
         assert not list(actual.iterdir())
+
+
+def grouped_presentation(text: str = 'Nested consent step') -> bytes:
+    """Build a synthetic nested flow with text, a table and an empty connector."""
+    from pptx.util import Inches
+    from pptx.enum.shapes import MSO_CONNECTOR
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'Before group'
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'Issuer step'
+    nested = group.shapes.add_group_shape()
+    nested.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = text
+    table = slide.shapes.add_table(1, 2, 0, 0, Inches(2), Inches(1))
+    table.table.cell(0, 0).text, table.table.cell(0, 1).text = 'Holder', 'Verifier'
+    # PowerPoint permits graphic frames inside groups; reparent the synthetic table.
+    nested.shapes._spTree.insert_element_before(table._element, 'p:extLst')
+    group.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, 0, 0, Inches(1), Inches(1))
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'After group'
+    output = io.BytesIO()
+    deck.save(output)
+    return output.getvalue()
+
+
+def test_grouped_presentation_evidence_preserves_order() -> None:
+    """Grouped diagram labels and table cells are retained once in shape order."""
+    assert extract_text(grouped_presentation(), 'flow.pptx') == (
+        'Slide 1\nBefore group\nIssuer step\nNested consent step\nHolder | Verifier\nAfter group')
+
+
+def test_grouped_presentation_attachment_retains_evidence(tmp_path: Path) -> None:
+    """The public upload route must retain grouped source text in the reference snapshot."""
+    app = create_app(tmp_path / 'groups.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/attachments?filename=flow.pptx', content=grouped_presentation())
+        assert response.status_code == 200
+        attachment = app.state.store.get('attachment', response.json()['id'])
+        assert 'Nested consent step' in attachment['text']
+        assert 'Holder | Verifier' in attachment['text']
+
+
+def test_grouped_presentation_cannot_bypass_reference_limit() -> None:
+    """Nested text counts against the same attachment budget as top-level text."""
+    from src.attachments import MAX_REFERENCE, parse
+    with pytest.raises(ValueError):
+        parse(grouped_presentation('x' * (MAX_REFERENCE + 1)), 'flow.pptx')

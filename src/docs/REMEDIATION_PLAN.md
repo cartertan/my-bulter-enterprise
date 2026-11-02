@@ -326,3 +326,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Evidence strings now explicitly preserve whitespace while ordinary form fields retain their existing normalization. Source quotes still reject whitespace-only values; review quote bounds and safe error codes remain enforced. No dependency or network behavior changed.
 - Validation: six regression cases failed before the fix. All 364 tests now pass, alongside three JavaScript syntax checks and the 76-file package gate. Eleven added cases cover spaces, tabs/newlines, Unicode whitespace, blank rejection, exact persisted peer evidence, and API missions where an inexact source or review quotation blocks a model pass and export.
 - This is exact-text integrity, not factual truth or entailment. Existing mission history is not rewritten or retroactively revalidated. Section assembly, online research, broader browser/model/template checks and final end-to-end acceptance remain open.
+
+
+### REL-002 grouped PowerPoint source completeness: 2 November 2026
+
+- Reproduced omission of nested grouped diagram labels and table cells during PowerPoint source ingestion. The upload succeeded with only top-level text, so reviewers could receive an incomplete source snapshot and grouped text escaped the attachment reference-size check.
+- Extraction now traverses nested groups iteratively in drawing order, retaining text and table cells once. Non-text connectors remain ignored. Existing decompression, extraction and attachment limits still apply; over-budget grouped sources are rejected rather than silently omitted. No new dependencies or network calls.
+- Validation: all three new synthetic regressions failed before the fix. All 367 tests now pass, alongside three JavaScript syntax checks and the 76-file package gate. Tests cover nested label/table order, authenticated attachment snapshot retention and rejection when grouped text exceeds the reference limit.
+- Existing retained snapshots are not rewritten; re-upload is needed to extract previously omitted group content. Drawing order is not a claim about visual reading order, and this does not add OCR, SmartArt/chart interpretation or rendered validation. Section assembly, online research and final end-to-end acceptance remain open.

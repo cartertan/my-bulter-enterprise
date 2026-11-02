@@ -43,11 +43,23 @@ def extract_text(data: bytes, filename: str) -> str:
         elif suffix == ".pptx":
             from pptx import Presentation
             deck = Presentation(io.BytesIO(data))
-            text = "\n\n".join(f"Slide {i + 1}\n" + "\n".join(
-                shape.text if shape.has_text_frame else
-                "\n".join(" | ".join(c.text for c in row.cells) for row in shape.table.rows)
-                for shape in slide.shapes if shape.has_text_frame or shape.has_table)
-                for i, slide in enumerate(deck.slides))
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            pages = []
+            for index, slide in enumerate(deck.slides):
+                parts = []
+                # Traverse groups iteratively: retain drawing order without recursion limits.
+                pending = list(reversed(list(slide.shapes)))
+                while pending:
+                    shape = pending.pop()
+                    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                        pending.extend(reversed(list(shape.shapes)))
+                    elif shape.has_text_frame:
+                        parts.append(shape.text)
+                    elif shape.has_table:
+                        parts.append("\n".join(" | ".join(cell.text for cell in row.cells)
+                                               for row in shape.table.rows))
+                pages.append(f"Slide {index + 1}\n" + "\n".join(parts))
+            text = "\n\n".join(pages)
         else:
             import pdfplumber
             with pdfplumber.open(io.BytesIO(data)) as document:
