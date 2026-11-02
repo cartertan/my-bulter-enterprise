@@ -955,3 +955,49 @@ def test_multiline_citation_labels_keep_the_correct_links() -> None:
              for paragraph in shape.text_frame.paragraphs for run in paragraph.runs if run.hyperlink.address]
     assert links == [('S1: First', sources[0]['source_url']), ('continued', sources[0]['source_url']),
                      ('S2: Second', sources[1]['source_url'])]
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+def test_upload_recording_time_survives_mission_and_restart(tmp_path: Path, monkeypatch, kind: str) -> None:
+    """Record server save time once and retain it as evidence metadata, not a publication date."""
+    from datetime import datetime, timezone
+    from src.tests.test_app import add_bot, wait_mission
+    database = tmp_path / 'recording-time.sqlite3'
+    app = create_app(database)
+
+    async def stream(*args, **kwargs):
+        """Use synthetic output without network/model calls."""
+        yield 'Synthetic response'
+
+    monkeypatch.setattr('src.app.generate', stream)
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        before = datetime.now(timezone.utc)
+        response = client.post('/api/attachments?filename=source.' + kind, content=office(kind, 'Synthetic evidence'))
+        after = datetime.now(timezone.utc)
+        assert response.status_code == 200
+        uploaded = response.json()
+        recorded = datetime.fromisoformat(uploaded['created'])
+        assert recorded.utcoffset().total_seconds() == 0
+        assert before <= recorded <= after
+        bot = add_bot(client)
+        started = client.post('/api/missions', json={'prompt': 'Inspect this source',
+            'bulter_ids': [bot['id']], 'attachment_ids': [uploaded['id']]})
+        assert started.status_code == 200
+        mission = wait_mission(client)
+        assert mission['source_register'][0]['recorded_at'] == uploaded['created']
+        assert 'published_at' not in mission['source_register'][0]
+        assert 'retrieved_at' not in mission['source_register'][0]
+        assert 'raw' not in mission['attachments'][0]
+    restarted = create_app(database)
+    with TestClient(restarted):
+        assert restarted.state.store.get('attachment', uploaded['id'])['created'] == uploaded['created']
+        assert restarted.state.store.get('mission', mission['id'])['source_register'] == mission['source_register']
+
+
+def test_legacy_upload_date_remains_unknown() -> None:
+    """Never substitute today's time for an upload whose historical date was not recorded."""
+    from src.app import source_register
+    source = {'id': 'legacy', 'filename': 'legacy.txt', 'text': 'Synthetic evidence'}
+    assert source_register([source], [])[0]['recorded_at'] is None
+    assert 'created' not in source

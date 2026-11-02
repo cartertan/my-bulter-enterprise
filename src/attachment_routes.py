@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
@@ -65,6 +66,8 @@ def install_attachment_routes(app, store) -> None:
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             record = {"id": str(uuid4()), "filename": filename, "size": len(raw), **parsed,
+                      # Save time is source provenance, never an inferred publication/retrieval date.
+                      "created": datetime.now(timezone.utc).isoformat(),
                       "raw": base64.b64encode(raw).decode()}
             store.put("attachment", record)
             return public_attachment(record)

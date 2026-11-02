@@ -350,3 +350,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Composition revalidates URLs against the existing Office hyperlink policy before creating relationships. Missing URL/date/provenance remains explicitly not supplied/not recorded/unverified. Recorded time is labelled as distinct from retrieval/publication time. Full URLs stay in notes to avoid overflowing visible citation panels; multiline labels retain the correct link mapping. No URL is fetched.
 - Validation: 380 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Five new cases verify native-library hyperlink reopening, provenance in notes and reviewer projection, exclusion of unused source metadata, three unsafe URL forms and multiline link mapping. Existing composition/template/inspection/recovery tests also pass.
 - Remaining: publisher/content verification, automated bounded research, rendered hyperlink styling and representative template/model checks, section assembly and final end-to-end acceptance. A clickable citation and exact quotation do not establish factual support. No private source artifacts were published and no acceptance gate was closed.
+
+
+### EVD-001 uploaded-source recording time: 3 November 2026
+
+- New authenticated attachments now record a server-generated UTC save timestamp. Previously uploads had no date, leaving the mission source register and composed citation notes unable to identify when a source entered the app. The timestamp uses the existing recorded_at path and is not a publication or retrieval claim.
+- No historical date is inferred or backfilled. Existing source snapshots remain unchanged, and their dates remain unknown. Document/image upload limits and binary privacy boundaries are unchanged.
+- Validation: the DOCX/PPTX regression cases failed before the fix. All 383 tests pass, with three JavaScript syntax checks and the 76-file package gate. Three added cases cover timestamps bounded by upload execution, UTC awareness, preservation into mission registers and across app restart, and legacy sources remaining undated. No paid calls or private files were used.
+- Remaining: bounded research, source verification, section assembly, representative model/template/render validation and final end-to-end acceptance. This source-recording fix does not close any acceptance gate.
