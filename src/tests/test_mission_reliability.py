@@ -886,3 +886,26 @@ def test_exact_constraint_failure_overrides_model_pass_and_survives_revision(tmp
         assert child['expected_slide_count'] == 1 and child['exact_duration_seconds'] == 60
         assert child['status'] == 'completed_with_issues' and child['acceptance_status'] == 'not_assessed'
         assert len(calls) == 4
+
+
+@pytest.mark.parametrize('variant', ['bad_duration', 'extra_field', 'invalid_json', 'duplicate_field'])
+def test_author_outline_errors_preserve_privacy_and_actionable_guidance(variant: str) -> None:
+    """Parser diagnostics must not repeat model-controlled field values or keys."""
+    import json
+    from src.app import parse_presentation_outline
+    outline = timed_outline(60, 0)
+    if variant == 'bad_duration':
+        outline['slides'][0]['duration_seconds'] = 'PRIVATE_PAYLOAD_MARKER'
+    elif variant == 'extra_field':
+        outline['PRIVATE_PAYLOAD_MARKER'] = 'sensitive test value'
+    output = json.dumps(outline)
+    if variant == 'invalid_json':
+        output = 'PRIVATE_PAYLOAD_MARKER not JSON'
+    elif variant == 'duplicate_field':
+        output = '{"PRIVATE_PAYLOAD_MARKER":1,"PRIVATE_PAYLOAD_MARKER":2}'
+    with pytest.raises(ValueError) as error:
+        parse_presentation_outline(output)
+    message = str(error.value)
+    assert 'Author outline is invalid' in message and 'positive integer' in message
+    assert 'PRIVATE_PAYLOAD_MARKER' not in message
+    assert 'input_value' not in message and 'pydantic.dev' not in message

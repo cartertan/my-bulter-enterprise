@@ -248,6 +248,14 @@ def unique_json_fields(pairs: list[tuple]) -> dict:
     return result
 
 
+def parse_presentation_outline(output: str) -> TimedPresentation:
+    """Validate model JSON without propagating input values or parser internals into errors."""
+    try:
+        return TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
+
+
 def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False, expected_slide_count: int | None = None, exact_duration_seconds: int | None = None) -> str:
     """Request explicit integer timings without estimating them from prose."""
     if budget is None:
@@ -278,7 +286,7 @@ def validate_timing(output: str, budget: int, complete: bool = True, expected_sl
     try:
         if not complete:
             raise ValueError("Incomplete draft")
-        draft = TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
+        draft = parse_presentation_outline(output)
         if len({slide.slide_id for slide in draft.slides}) != len(draft.slides):
             raise ValueError("Duplicate slide ID")
         speaking = sum(slide.duration_seconds for slide in draft.slides)
@@ -334,7 +342,7 @@ def validate_sources(output: str, attachments: list[dict], evidence: list[dict],
     texts = {item["id"]: item.get("text", "") for item in attachments if item.get("text")}
     texts.update({item["id"]: item.get("content", "") for item in evidence if item.get("content") and not item.get("truncated")})
     try:
-        draft = TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
+        draft = parse_presentation_outline(output)
         if not complete or any(not slide.claims for slide in draft.slides):
             raise ValueError("Incomplete claim coverage")
         claims = [claim for slide in draft.slides for claim in slide.claims]
@@ -976,7 +984,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot_index == 0 and (mission.get("compose_presentation") or (len(bots) == 2 and mission.get("attachment_mode") in {"reuse_design", "edit"})):
                         try:
                             if mission.get("compose_presentation"):
-                                outline = TimedPresentation.model_validate(json.loads(step["output"], object_pairs_hook=unique_json_fields))
+                                outline = parse_presentation_outline(step["output"])
                                 if not any(slide.flow_steps for slide in outline.slides):
                                     raise ValueError("The presentation needs at least one explicit flow diagram.")
                                 if mission.get("require_picture") and not any(slide.image_id for slide in outline.slides):

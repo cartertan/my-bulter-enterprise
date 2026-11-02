@@ -878,6 +878,8 @@ def test_author_schema_does_not_replace_timing_validation(tmp_path: Path, monkey
         assert response.status_code == 200
         mission = wait_mission(client)
         assert mission['status'] == 'failed' and len(calls) == 1
+        assert 'Author outline is invalid' in mission['error']
+        assert 'input_value' not in mission['error'] and 'pydantic.dev' not in mission['error']
         assert not mission.get('artifact_id')
         assert all('response_schema' not in b for b in mission['team'])
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
