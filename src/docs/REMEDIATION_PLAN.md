@@ -390,3 +390,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - The error recommends resaving a clean Office file without echoing source text or internal filenames. No files are repaired, deleted or rewritten automatically. Existing size/macro checks remain in force.
 - Validation: both DOCX/PPTX regressions failed before the fix. All 406 tests pass, three JavaScript syntax checks and the 76-file package gate pass. The two new cases exercise extraction, attachment parsing, review projection, edit/template output and authenticated upload rejection without persisting an attachment. Existing valid Office round trips pass.
 - This check rejects duplicate names; it is not a complete Office format/security certification. Section assembly, bounded research, representative model/template/render checks and final end-to-end acceptance remain open. No private source files or paid calls were used.
+
+
+### REV-001 shared slide identity validation: 3 November 2026
+
+- Moved slide-ID uniqueness into the shared timed-presentation schema. Previously timing rejected duplicate IDs only after composition could create an inspectable artifact, while source validation could still report valid references for that ambiguous outline. Composition parsing, timing and source checks now use the same identity rule.
+- Repeated IDs, including collisions after normal field whitespace trimming, fail before artifact creation or reviewer invocation in composition missions. The sanitized outline error now explicitly requests unique slide IDs. Ordinary export was already blocked by timing; this closes the earlier artifact-creation inconsistency.
+- Validation: all three new cases failed before the fix. All 409 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Tests cover exact/whitespace-normalized duplicate identities across all shared parser consumers and an API mission with no artifact, no peer call, unchanged unassessed acceptance and blocked inspection/export. Existing valid composition and timing tests pass.
+- Remaining: section assembly, bounded research, representative model/template/render checks and final end-to-end acceptance. Prior mission history remains unchanged; no acceptance criteria closed.

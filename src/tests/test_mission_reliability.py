@@ -1120,3 +1120,18 @@ def test_preflight_blocks_mutations_that_require_idle_missions(tmp_path: Path, m
                 assert not app.state.store.get('bulter', bot['id']).get('removed_at')
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('second_id', ['slide-1', ' slide-1 '])
+def test_duplicate_slide_identity_is_invalid_for_all_outline_consumers(second_id: str) -> None:
+    """Source checks and composition parsing must enforce the timing check's identity rule."""
+    import json
+    from src.app import parse_presentation_outline, validate_sources, validate_timing
+    slide = {'slide_id': 'slide-1', 'title': 'Consent', 'body': 'Consent is required',
+             'speaker_notes': '', 'duration_seconds': 60,
+             'claims': [{'text': 'Consent is required', 'evidence': [{'source_id': 's', 'quote': 'Consent'}]}]}
+    output = json.dumps({'slides': [slide, {**slide, 'slide_id': second_id}], 'discussion_seconds': 0})
+    with pytest.raises(ValueError, match='Author outline is invalid'):
+        parse_presentation_outline(output)
+    assert validate_timing(output, 120)['state'] == 'invalid'
+    assert validate_sources(output, [], [{'id': 's', 'content': 'Consent'}], True)['state'] == 'invalid'

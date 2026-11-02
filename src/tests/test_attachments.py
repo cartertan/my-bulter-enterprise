@@ -1079,3 +1079,32 @@ def test_duplicate_office_parts_are_rejected_consistently(tmp_path: Path, kind: 
         assert response.status_code == 400
         assert 'duplicate' in response.json()['detail']
         assert app.state.store.all('attachment') == []
+
+
+def test_duplicate_slide_ids_block_artifact_creation_and_peer_call(tmp_path: Path, monkeypatch) -> None:
+    """Duplicate logical slide identities cannot become an inspectable Office artifact."""
+    from src.tests.test_app import add_bot, wait_mission
+    calls = []
+    slide = {'slide_id': 'same', 'title': 'Consent', 'body': 'Explicit consent',
+             'speaker_notes': '', 'duration_seconds': 60, 'flow_steps': ['Consent', 'Issue']}
+
+    async def stream(*args, **kwargs):
+        calls.append(True)
+        yield json.dumps({'slides': [slide, slide], 'discussion_seconds': 0})
+
+    monkeypatch.setattr('src.app.generate', stream)
+    app = create_app(tmp_path / 'duplicate-slide.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Prepare a flow presentation',
+            'bulter_ids': [bot['id'] for bot in bots], 'review_criteria': ['Include consent'],
+            'duration_budget_seconds': 120, 'compose_presentation': True})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == 'failed' and len(calls) == 1
+        assert mission['steps'][0]['status'] == 'failed'
+        assert not mission.get('artifact_id')
+        assert mission['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{mission['id']}/artifact/draft").status_code == 409
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400

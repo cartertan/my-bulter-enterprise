@@ -242,6 +242,13 @@ class TimedPresentation(StrictInput):
     slides: list[TimedSlide] = Field(min_length=1, max_length=60)
     discussion_seconds: int = Field(strict=True, ge=0, le=14400)
 
+    @model_validator(mode="after")
+    def unique_slide_ids(self) -> "TimedPresentation":
+        """Enforce stable slide identity for composition, source checks and timing alike."""
+        if len({slide.slide_id for slide in self.slides}) != len(self.slides):
+            raise ValueError("Duplicate slide ID")
+        return self
+
 
 def unique_json_fields(pairs: list[tuple]) -> dict:
     """Reject ambiguous JSON key overwrites for both draft and review schemas."""
@@ -258,7 +265,7 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
     try:
         return TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
     except (ValueError, TypeError) as exc:
-        raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
+        raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, unique slide IDs, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
 
 
 def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False, expected_slide_count: int | None = None, exact_duration_seconds: int | None = None) -> str:
@@ -292,8 +299,6 @@ def validate_timing(output: str, budget: int, complete: bool = True, expected_sl
         if not complete:
             raise ValueError("Incomplete draft")
         draft = parse_presentation_outline(output)
-        if len({slide.slide_id for slide in draft.slides}) != len(draft.slides):
-            raise ValueError("Duplicate slide ID")
         speaking = sum(slide.duration_seconds for slide in draft.slides)
         total = speaking + draft.discussion_seconds
         check.update(state="pass" if total <= budget else "exceeded", slide_count=len(draft.slides),
