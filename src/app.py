@@ -20,6 +20,7 @@ import sys
 import base64
 import yaml
 from contextlib import aclosing, asynccontextmanager
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
@@ -546,6 +547,16 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     credentials = Credentials(store, credential_backend)
     connectors = Connectors(store, credentials)
     credential_lock = asyncio.Lock()
+    admission_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def mission_admission() -> AsyncIterator[None]:
+        """Reserve the single-worker execution slot across asynchronous preflight."""
+        if admission_lock.locked():
+            raise HTTPException(409, "A mission is being prepared. Wait for preflight to finish.")
+        # Acquisition cannot yield between the check and locking an unlocked asyncio lock.
+        async with admission_lock:
+            yield
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -1078,6 +1089,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
 
     @app.post("/api/missions")
     async def start_mission(data: MissionInput) -> dict:
+        """Serialize mission admission, including awaited preflight checks."""
+        async with mission_admission():
+            return await prepare_mission(data)
+
+    async def prepare_mission(data: MissionInput) -> dict:
         """Snapshot the team and policy before any model receives data."""
         if credential_lock.locked():
             raise HTTPException(409, "Wait for the Keychain operation to finish before starting a mission.")
@@ -1324,12 +1340,14 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     @app.post("/api/missions/{identifier}/resume")
     async def resume_mission(identifier: str, data: ResumeInput) -> dict:
         """Explicitly recover unfinished steps with renewed consent."""
-        return await recover_mission(identifier, data)
+        async with mission_admission():
+            return await recover_mission(identifier, data)
 
     @app.post("/api/missions/{identifier}/revise")
     async def revise_mission(identifier: str, data: ResumeInput) -> dict:
         """Explicitly run a bounded author/reviewer revision without accepting it."""
-        return await recover_mission(identifier, data, revise=True)
+        async with mission_admission():
+            return await recover_mission(identifier, data, revise=True)
 
     @app.post("/api/missions/{identifier}/stop")
     async def stop_mission(identifier: str) -> dict:

@@ -366,3 +366,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Valid proposals still require exactly replacements containing old/new text, with unique exact paragraph targets and existing size limits. Invalid proposals return the existing sanitized correction message; no source text or payload fields are echoed. Two-agent author steps fail before artifact creation or peer review.
 - Validation: ten duplicate/extra-field regression cases failed before the fix. All 395 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Twelve new cases cover DOCX/PPTX duplicate new/old/list keys, extra fields and API rejection with unchanged source bytes, no reviewer call, no artifact and blocked export. Existing valid edit/recovery tests pass.
 - Remaining: section assembly, bounded research, representative model/template/render checks and final end-to-end acceptance. Prior mission history is unchanged; this parser fix does not close acceptance criteria.
+
+
+### REL-002 single mission admission during preflight: 3 November 2026
+
+- Reproduced a race where mission start checked for active work and then awaited vision/template preflight before reserving execution. A concurrent request could pass the same check and schedule another mission.
+- A shared admission guard now covers start, resume and revision endpoints through preparation and task registration. Concurrent requests receive 409 immediately; they are not queued or retried automatically. Existing active-task checks still govern execution after preparation. Failed preflight releases the reservation.
+- Validation: three concurrent request regressions failed before the fix. All 399 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Four added cases exercise suspended vision preflight versus a second start/resume/revision and successful admission after invalid preflight. Synthetic asynchronous HTTP requests run in one event loop with no real model calls.
+- Scope is the documented single-process worker, not distributed scheduling or multi-worker hosting. Section assembly, bounded research, broader model/template/render checks and final end-to-end acceptance remain open. No acceptance gate closed.

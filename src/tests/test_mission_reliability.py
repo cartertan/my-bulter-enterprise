@@ -998,3 +998,66 @@ def test_inexact_quotation_blocks_mission_pass(tmp_path: Path, inexact: str) -> 
             assert review['state'] == 'invalid' and review['error_code'] == 'review_evidence'
         assert mission['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('second_path', ['/api/missions', '/api/missions/missing/resume', '/api/missions/missing/revise'])
+def test_mission_preflight_reserves_execution_slot(tmp_path: Path, monkeypatch, second_path: str) -> None:
+    """A request awaiting vision preflight must exclude concurrent starts and recovery."""
+    import asyncio
+    import httpx
+
+    async def scenario() -> None:
+        app = create_app(tmp_path / 'admission.sqlite3')
+        entered, release = asyncio.Event(), asyncio.Event()
+        checks = []
+
+        async def vision(bots):
+            checks.append(True)
+            if len(checks) == 1:
+                entered.set()
+                await release.wait()
+
+        async def stream(*args, **kwargs):
+            await asyncio.Event().wait()
+            yield ''
+
+        monkeypatch.setattr('src.app.require_vision', vision)
+        monkeypatch.setattr('src.app.generate', stream)
+        app.state.store.put('attachment', {'id': 'photo', 'kind': 'image', 'text': '', 'image': '',
+                                          'filename': 'synthetic.png', 'raw': ''})
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1',
+                                         headers={'x-bulter-token': app.state.csrf}) as client:
+                bot = (await client.post('/api/bulters', json={'name': 'Author', 'role': 'Draft',
+                    'provider': 'ollama', 'model': 'synthetic'})).json()
+                payload = {'prompt': 'Inspect the synthetic photo', 'bulter_ids': [bot['id']], 'attachment_ids': ['photo']}
+                first = asyncio.create_task(client.post('/api/missions', json=payload))
+                await asyncio.wait_for(entered.wait(), 2)
+                try:
+                    second = await asyncio.wait_for(client.post(second_path,
+                        json=payload if second_path == '/api/missions' else {}), 2)
+                finally:
+                    release.set()
+                    accepted = await first
+                assert accepted.status_code == 200
+                assert second.status_code == 409
+                assert len(checks) == 1
+                assert len(app.state.store.all('mission')) == 1
+
+    asyncio.run(scenario())
+
+
+def test_failed_preflight_releases_execution_reservation(tmp_path: Path, monkeypatch) -> None:
+    """An invalid request must not leave the app permanently busy."""
+    app = create_app(tmp_path / 'admission-release.sqlite3')
+
+    async def stream(*args, **kwargs):
+        yield 'Synthetic completed response'
+
+    monkeypatch.setattr('src.app.generate', stream)
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bot = add_bot(client)
+        assert client.post('/api/missions', json={'prompt': 'Invalid selection', 'bulter_ids': ['missing']}).status_code == 404
+        assert client.post('/api/missions', json={'prompt': 'Valid selection', 'bulter_ids': [bot['id']]}).status_code == 200
+        assert wait_mission(client)['status'] == 'completed'
