@@ -14,6 +14,7 @@ import pytest
 from docx import Document
 from PIL import Image
 from pptx import Presentation
+from pptx.enum.shapes import PP_PLACEHOLDER
 from fastapi.testclient import TestClient
 
 from src.app import create_app
@@ -462,8 +463,9 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
             refs = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
             projection = refs['previous_bulter_outputs'][-1]['output']
             assert 'Holder consents' in projection
+            assert 'Speaker notes: Explain identity proofing and explicit consent.' in projection
             yield json.dumps({'draft_hash': hashlib.sha256(projection.encode()).hexdigest(), 'criteria': [
-                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'The flow includes consent', 'evidence_quotes': ['Holder consents']}]})
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'The speaker explains consent', 'evidence_quotes': ['Explain identity proofing and explicit consent.']}]})
 
     async def fake_vision(bots):
         return None
@@ -500,6 +502,9 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
         exported = client.get(f"/api/missions/{mission['id']}/export/pptx")
         assert exported.status_code == 200
         assert hashlib.sha256(exported.content).hexdigest() == mission['artifact_sha256']
+        inspected = client.get(f"/api/missions/{mission['id']}/artifact/draft")
+        assert inspected.status_code == 200 and inspected.content == exported.content
+        assert app.state.store.get('artifact', mission['artifact_id'])['review_projection_version'] == 2
         deck = Presentation(io.BytesIO(exported.content))
         assert len(deck.slides) == (2 if use_picture else 1)
         if use_picture:
@@ -883,3 +888,19 @@ def test_author_schema_does_not_replace_timing_validation(tmp_path: Path, monkey
         assert not mission.get('artifact_id')
         assert all('response_schema' not in b for b in mission['team'])
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+
+
+def test_speaker_notes_projection_is_opt_in_and_excludes_furniture() -> None:
+    """Review speaker content without changing exact-edit targets or including footers."""
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    notes = slide.notes_slide
+    notes.notes_text_frame.text = "Private speaker detail\nSecond paragraph"
+    for shape in notes.placeholders:
+        if shape.has_text_frame and shape.placeholder_format.type != PP_PLACEHOLDER.BODY:
+            shape.text_frame.text = "Excluded furniture"
+    buffer = io.BytesIO()
+    deck.save(buffer)
+    assert office_paragraphs(buffer.getvalue(), "test.pptx") == []
+    assert office_paragraphs(buffer.getvalue(), "test.pptx", include_notes=True) == [
+        "Speaker notes: Private speaker detail", "Speaker notes: Second paragraph"]

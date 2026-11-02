@@ -700,7 +700,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             digest = hashlib.sha256(data).hexdigest()
             if digest != artifact["sha256"] or digest != mission.get("artifact_sha256"):
                 raise ValueError("Draft artifact integrity check failed.")
-            paragraphs = office_paragraphs(data, "artifact." + artifact["format"])
+            paragraphs = office_paragraphs(data, "artifact." + artifact["format"], include_notes=artifact.get("review_projection_version") == 2)
             projection = json.dumps({"artifact_sha256": digest, "paragraphs": paragraphs}, ensure_ascii=False)
             if projection != artifact.get("review_text"):
                 raise ValueError("Draft artifact text does not match its retained projection.")
@@ -903,7 +903,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if author and mission.get("artifact_id"):
                         artifact = store.get("artifact", mission["artifact_id"])
                         author = {**author, "output": artifact["review_text"]}
-                        prompt += "\nReview the resulting Office artifact text, not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
+                        prompt += "\nReview the resulting Office artifact text (including speaker notes when present), not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
                     prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0, mission.get("compose_presentation", False), mission.get("expected_slide_count"), mission.get("exact_duration_seconds"))
                     if mission.get("compose_presentation") and bot_index == 0:
                         prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Use the composition layout; an uploaded template supplies theme and masters, not sample content.'
@@ -1002,7 +1002,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                                     {"status": "completed", "steps": [step]})
                                 filename = template["filename"]
                                 source_revision = mission["source_revisions"]["attachment"][template["id"]]
-                            paragraphs = office_paragraphs(artifact_bytes, filename)
+                            paragraphs = office_paragraphs(artifact_bytes, filename, include_notes=True)
                             artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
                             handoff_output = json.dumps({"artifact_sha256": artifact_hash, "paragraphs": paragraphs}, ensure_ascii=False)
                             if bounded_output(handoff_output, mission["handoff_budgets"][0])[1]:
@@ -1013,7 +1013,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             raise ProviderError(str(exc)) from exc
                         artifact = {"id": str(uuid4()), "mission_id": mission["id"], "sha256": artifact_hash,
                                     "format": Path(filename).suffix.lower()[1:],
-                                    "source_revision": source_revision,
+                                    "source_revision": source_revision, "review_projection_version": 2,
                                     "raw": base64.b64encode(artifact_bytes).decode(), "review_text": handoff_output}
                         if mission.get("compose_presentation"):
                             artifact["image_assets"] = [{"attachment_id": identifier, "filename": image_assets[identifier]["filename"],
@@ -1258,7 +1258,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         or hashlib.sha256(base64.b64decode(retained_artifact["raw"], validate=True)).hexdigest() != parent.get("artifact_sha256")):
                     raise ValueError("Artifact mismatch")
                 # Recompute the projection; do not trust a separately modified review-text field.
-                paragraphs = office_paragraphs(base64.b64decode(retained_artifact["raw"]), "artifact." + retained_artifact["format"])
+                paragraphs = office_paragraphs(base64.b64decode(retained_artifact["raw"]), "artifact." + retained_artifact["format"], include_notes=retained_artifact.get("review_projection_version") == 2)
                 expected = json.dumps({"artifact_sha256": retained_artifact["sha256"], "paragraphs": paragraphs}, ensure_ascii=False)
                 if expected != retained_artifact["review_text"]:
                     raise ValueError("Artifact projection mismatch")

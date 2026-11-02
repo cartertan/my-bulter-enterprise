@@ -310,3 +310,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Timing, source validation and artifact composition use the same parser. Invalid JSON, extra/duplicate fields and invalid durations remain rejected. Original model output stays in its existing private step record for inspection; no history is rewritten and no automatic repair or inference is performed.
 - Validation: 352 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Four new cases cover private marker values/keys, malformed JSON and duplicate fields; existing API invalid-duration tests confirm the mission error is sanitized and artifact/export gates remain closed.
 - Remaining: browser verification of exact constraints, wider model/template validation, section assembly, online research and final end-to-end acceptance. This diagnostic fix does not establish author correctness or complete any acceptance gate.
+
+
+### REV-001 speaker-note review coverage: 2 November 2026
+
+- Resulting PowerPoint artifact review now includes speaker-body notes, including composed timing/source notes. Previously reviewers only received slide text, so substantive speaker details were outside their evidence. Slide-number/footer placeholders remain excluded, and exact template-edit targets remain unchanged.
+- New artifacts record projection version 2; inspection and recovery recompute that version while existing unversioned artifacts retain their original projection. Complete review text still must fit the reserved budget; notes are never silently truncated.
+- Validation: 353 tests pass, all three JavaScript syntax checks and the 76-file package gate pass. Regression coverage verifies opt-in extraction, placeholder exclusion, peer evidence quoted from speaker notes, and exact inspection downloads with the new projection; existing legacy inspection/recovery tests also pass.
+- Remaining: section assembly, bounded online research, broader browser/model/template validation and final end-to-end acceptance. This closes a text-review coverage gap, not rendered or factual acceptance; all issues remain open.

@@ -167,8 +167,8 @@ def main() -> None:
     sys.stdout.write(json.dumps(result))
 
 
-def office_paragraphs(data: bytes, filename: str) -> list[str]:
-    """Expose exact editable paragraph text for grounded replacement proposals."""
+def office_paragraphs(data: bytes, filename: str, *, include_notes: bool = False) -> list[str]:
+    """Extract editable text, optionally including speaker bodies for artifact review."""
     extract_text(data, filename)
     paragraphs = []
     with zipfile.ZipFile(io.BytesIO(data)) as source:
@@ -181,6 +181,18 @@ def office_paragraphs(data: bytes, filename: str) -> list[str]:
                     text = "".join(node.text or "" for node in paragraph.iter(f"{{{ns}}}t"))
                     if text.strip():
                         paragraphs.append(text)
+            elif include_notes and name.startswith("ppt/notesSlides/notesSlide") and name.endswith(".xml"):
+                root = ET.fromstring(source.read(name), parser=ET.XMLParser(resolve_entities=False, no_network=True))
+                namespaces = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+                              "a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+                for shape in root.findall(".//p:sp", namespaces):
+                    # Only speaker bodies are substantive; skip slide numbers and master furniture.
+                    if shape.find("p:nvSpPr/p:nvPr/p:ph[@type='body']", namespaces) is None:
+                        continue
+                    for paragraph in shape.findall(".//a:p", namespaces):
+                        text = "".join(node.text or "" for node in paragraph.findall(".//a:t", namespaces))
+                        if text.strip():
+                            paragraphs.append("Speaker notes: " + text)
     return paragraphs
 
 
