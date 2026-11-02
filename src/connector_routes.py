@@ -8,6 +8,7 @@ import asyncio
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from src.connectors import Connectors, ConnectorError, text_field
+from src.attachments import citation_target_allowed
 
 
 async def body(request: Request, fields: set[str]) -> dict:
@@ -93,8 +94,12 @@ def install_connector_routes(app: FastAPI, connectors: Connectors) -> None:
     @app.post("/api/connectors/manual")
     async def manual(request: Request) -> dict:
         """Record only the excerpt the user explicitly pasted for analysis."""
-        data = await body(request, {"text"})
-        return connectors.evidence("manual", "User-provided excerpt", text_field(data, "text", 6000))
+        data = await body(request, {"text", "title", "source_url"})
+        title = text_field(data, "title", 160, False) or "User-provided excerpt"
+        source_url = text_field(data, "source_url", 2048, False)
+        if source_url and not citation_target_allowed(source_url):
+            raise ConnectorError("Use a public HTTPS source URL without credentials or a custom port. The page is not fetched.")
+        return connectors.evidence("manual", title, text_field(data, "text", 6000), source_url=source_url or None)
 
     @app.post("/api/connectors/actions/prepare")
     async def prepare(request: Request) -> dict:

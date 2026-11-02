@@ -327,6 +327,8 @@ def source_register(attachments: list[dict], evidence: list[dict]) -> list[dict]
                     "origin": item.get("source", "User-uploaded document"),
                     "recorded_at": item.get("created"), "content_sha256": draft_hash(text),
                     "truncated": bool(item.get("truncated", False))})
+                if item.get("source_url"):
+                    records[-1].update(source_url=item["source_url"], provenance=item.get("provenance", "unverified"))
     return records
 
 

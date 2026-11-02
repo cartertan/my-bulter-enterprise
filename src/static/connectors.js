@@ -54,6 +54,7 @@ async function refreshConnectors() {
   for (const item of connectorData.evidence) {
     const card = el('article', 'panel');
     card.append(el('h3', '', item.title), el('p', 'help', `${item.source} · ${item.created} · local-only${item.truncated ? ' · truncated' : ''}`));
+    if (item.source_url) card.append(el('p', 'help', `Source: ${item.source_url} · user-provided; page not fetched`));
     const details = document.createElement('details');
     details.append(el('summary', '', 'Review captured text'), el('pre', 'connector-text', item.content));
     card.append(details, button('Use in a local mission', 'secondary', () => {
@@ -128,8 +129,13 @@ for (const name of ['google', 'telegram']) bindConnectorButton(`#disconnect-${na
   await connectorOperation(`${name}/disconnect`);
 });
 bindConnectorButton('#save-manual-context', async () => {
-  await connectorOperation('manual', {text: $('#manual-connector-text').value});
+  const title = $('#manual-source-title').value.trim();
+  const sourceUrl = $('#manual-source-url').value.trim();
+  await connectorOperation('manual', {text: $('#manual-connector-text').value,
+    ...(title ? {title} : {}), ...(sourceUrl ? {source_url: sourceUrl} : {})});
   $('#manual-connector-text').value = '';
+  $('#manual-source-title').value = '';
+  $('#manual-source-url').value = '';
 });
 $('#connector-action-kind').addEventListener('change', () => {
   const type = $('#connector-action-kind').value.split('.')[0];
