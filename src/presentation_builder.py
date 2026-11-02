@@ -111,7 +111,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         header.fill.fore_color.rgb = RGBColor.from_string(navy)
         header.line.fill.background()
         textbox(slide, .65, .2, 12, .9, item['title'], 28, 'FFFFFF')
-        textbox(slide, .7, 1.65, 5.4 if flow or image_id else 11.8, 4.5, item['body'], 22, ink)
+        textbox(slide, .7, 1.65, 5.4 if flow or image_id else 11.8, 4.1, item['body'], 22, ink)
         image_note = ''
         if image_id:
             asset = images[image_id]
@@ -119,12 +119,12 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
                 width, height = photo.size
                 if photo.format != 'JPEG' or width * height > 20_000_000:
                     raise ValueError('Composition requires normalized JPEG attachments within image limits.')
-            left, top, box_width, box_height = bounds(7, 1.55, 5.4, 3.8)
+            left, top, box_width, box_height = bounds(7, 1.55, 5.4, 3.5)
             scale = min(box_width / width, box_height / height)
             drawn_width, drawn_height = int(width * scale), int(height * scale)
             slide.shapes.add_picture(io.BytesIO(asset['bytes']), left + (box_width - drawn_width) // 2,
                                     top + (box_height - drawn_height) // 2, drawn_width, drawn_height)
-            textbox(slide, 7, 5.45, 5.4, .65, caption, 14, ink)
+            textbox(slide, 7, 5.15, 5.4, .65, caption, 14, ink)
             image_note = (f"\nImage attachment: {image_id} | {asset['filename']}"
                           f"\nNormalized image SHA-256: {hashlib.sha256(asset['bytes']).hexdigest()}"
                           '\nImage origin: user-selected upload; rights and factual interpretation not verified.')
@@ -140,11 +140,12 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
                 arrow.fill.solid()
                 arrow.fill.fore_color.rgb = RGBColor.from_string(teal)
                 arrow.line.fill.background()
+        # Reserve the bottom half-inch of the grid for retained master/footer branding.
         citation_text = '\n'.join(source_names[identifier] for identifier in citations)
         if len(citation_text) > 320:
             raise ValueError('Citation labels exceed the slide footer budget; shorten source titles.')
-        textbox(slide, .7, 6.15, 11.8, .8, citation_text, 10, ink)
-        textbox(slide, .7, 7.05, 11.8, .3, f"{index + 1} / {len(manifest['slides'])}   |   {item['duration_seconds']} seconds   |   Draft — validation pending", 10, ink)
+        textbox(slide, .7, 5.85, 11.8, .8, citation_text, 10, ink)
+        textbox(slide, .7, 6.7, 11.8, .3, f"{index + 1} / {len(manifest['slides'])}   |   {item['duration_seconds']} seconds   |   Draft — validation pending", 10, ink)
         provenance = '\n'.join(f"{citation['source_id']}: {citation['quote']}" for claim in item.get('claims', []) for citation in claim['evidence'])
         slide.notes_slide.notes_text_frame.text = (item['speaker_notes'] + f"\nSpeaking time: {item['duration_seconds']} seconds."
             + f"\nPresentation discussion: {manifest['discussion_seconds']} seconds (once, not per slide).\nSource evidence:\n" + provenance + image_note)

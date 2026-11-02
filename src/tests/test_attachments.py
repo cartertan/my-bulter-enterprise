@@ -818,3 +818,35 @@ def test_restart_keeps_complete_drafts_inspectable_without_acceptance(tmp_path: 
         assert client.get('/api/missions/restart-mission/export/' + kind).status_code == 400
         assert restarted.state.store.get('mission', mission['id']) == restored
         assert restored['acceptance_status'] == 'not_assessed'
+
+
+def test_composition_reserves_template_footer_band() -> None:
+    """Generated panels must leave retained bottom-of-slide branding unobstructed."""
+    from copy import deepcopy
+    from pptx.util import Inches
+    from src.presentation_builder import compose_presentation
+    template = Presentation()
+    template.slide_width, template.slide_height = Inches(13.333), Inches(7.5)
+    sample = template.slides.add_slide(template.slide_layouts[6])
+    footer = sample.shapes.add_textbox(Inches(.2), Inches(7.02), Inches(2), Inches(.28))
+    footer.text = 'Synthetic master footer'
+    element = deepcopy(footer._element)
+    element.xpath('.//p:cNvPr')[0].set('id', '10000')
+    template.slide_master.shapes._spTree.insert_element_before(element, 'p:extLst')
+    source = io.BytesIO(); template.save(source)
+    photo = io.BytesIO(); Image.new('RGB', (400, 200), 'blue').save(photo, format='JPEG')
+    sources = [{'source_id': str(i), 'title': f'Reference {i}'} for i in range(4)]
+    common = {'body': 'Synthetic text', 'speaker_notes': 'Test only', 'duration_seconds': 60,
+              'claims': [{'evidence': [{'source_id': s['source_id'], 'quote': 'Evidence'} for s in sources]}]}
+    slides = [{**common, 'title': 'Flow', 'flow_steps': ['One', 'Two', 'Three', 'Four', 'Five']},
+              {**common, 'title': 'Picture', 'image_id': 'photo', 'image_caption': 'Synthetic photo'}]
+    result = compose_presentation({'slides': slides, 'discussion_seconds': 0}, sources, source.getvalue(),
+                                 {'photo': {'bytes': photo.getvalue(), 'filename': 'synthetic.jpg'}})
+    deck = Presentation(io.BytesIO(result))
+    assert any(s.has_text_frame and s.text == 'Synthetic master footer' for s in deck.slide_master.shapes)
+    for slide in deck.slides:
+        assert all(shape.top + shape.height <= Inches(7.0) for shape in slide.shapes)
+        citations = next(s for s in slide.shapes if s.has_text_frame and 'Reference 0' in s.text)
+        timing = next(s for s in slide.shapes if s.has_text_frame and 'seconds' in s.text)
+        assert citations.top + citations.height <= timing.top
+        assert all(s.top + s.height <= citations.top for s in slide.shapes if s.top < citations.top)
