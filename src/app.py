@@ -915,6 +915,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     # Credentials are a separate call argument, never part of a bot or mission snapshot.
                     auth = {"api_key": await asyncio.to_thread(credentials.get, bot["provider"])} if is_cloud(bot["provider"]) else {}
                     call_options = dict(bot)
+                    if bot["provider"] == "ollama" and bot_index == 0 and mission.get("duration_budget_seconds") is not None:
+                        # Use the same field types and bounds as post-generation validation.
+                        call_options["response_schema"] = TimedPresentation.model_json_schema()
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))

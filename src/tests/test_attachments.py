@@ -449,6 +449,10 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
         calls.append(messages)
         if len(calls) == 1:
             assert 'flow_steps' in messages[0]['content']
+            schema = kwargs['options']['response_schema']
+            assert schema['$defs']['TimedSlide']['properties']['duration_seconds']['minimum'] == 1
+            assert schema['properties']['discussion_seconds']['minimum'] == 0
+            assert schema['additionalProperties'] is False
             if use_picture == 'omitted':
                 manifest['slides'] = manifest['slides'][:1]
             yield json.dumps(manifest)
@@ -850,3 +854,30 @@ def test_composition_reserves_template_footer_band() -> None:
         timing = next(s for s in slide.shapes if s.has_text_frame and 'seconds' in s.text)
         assert citations.top + citations.height <= timing.top
         assert all(s.top + s.height <= citations.top for s in slide.shapes if s.top < citations.top)
+
+
+@pytest.mark.parametrize('invalid_duration', [0, -1, True, '60'])
+def test_author_schema_does_not_replace_timing_validation(tmp_path: Path, monkeypatch, invalid_duration) -> None:
+    """A provider ignoring grammar still cannot create an invalid timed artifact."""
+    from src.tests.test_app import add_bot, wait_mission
+    calls = []
+    async def stream(provider, model, system, messages, **kwargs):
+        calls.append(kwargs['options'])
+        assert 'response_schema' in kwargs['options']
+        yield json.dumps({'slides': [{'slide_id': 's1', 'title': 'Flow', 'body': 'Consent',
+            'speaker_notes': 'Synthetic only', 'duration_seconds': invalid_duration,
+            'flow_steps': ['Consent', 'Issue']}], 'discussion_seconds': 0})
+    monkeypatch.setattr('src.app.generate', stream)
+    app = create_app(tmp_path / 'author-schema.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Synthetic test',
+            'bulter_ids': [b['id'] for b in bots], 'review_criteria': ['Consent'],
+            'duration_budget_seconds': 120, 'compose_presentation': True})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert mission['status'] == 'failed' and len(calls) == 1
+        assert not mission.get('artifact_id')
+        assert all('response_schema' not in b for b in mission['team'])
+        assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
