@@ -1001,3 +1001,49 @@ def test_legacy_upload_date_remains_unknown() -> None:
     source = {'id': 'legacy', 'filename': 'legacy.txt', 'text': 'Synthetic evidence'}
     assert source_register([source], [])[0]['recorded_at'] is None
     assert 'created' not in source
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+@pytest.mark.parametrize('proposal', [
+    '{"replacements":[{"old":"Original example","new":"first","new":"second"}]}',
+    '{"replacements":[],"replacements":[{"old":"Original example","new":"second"}]}',
+    '{"replacements":[{"old":"absent","old":"Original example","new":"second"}]}',
+    '{"replacements":[{"old":"Original example","new":"second","instruction":"ignored"}]}',
+    '{"replacements":[{"old":"Original example","new":"second"}],"instruction":"ignored"}',
+])
+def test_ambiguous_or_extra_edit_json_is_rejected(kind: str, proposal: str) -> None:
+    """Duplicate keys and unrecognized directives cannot silently alter an Office edit."""
+    with pytest.raises(ValueError, match='invalid or ambiguous'):
+        edited_output(office(kind, 'Original example'), 'source.' + kind, completed(proposal))
+
+
+@pytest.mark.parametrize('kind', ['docx', 'pptx'])
+def test_ambiguous_edit_stops_before_peer_review(tmp_path: Path, monkeypatch, kind: str) -> None:
+    """An ambiguous author proposal cannot create an artifact or proceed to the reviewer."""
+    from src.tests.test_app import add_bot, wait_mission
+    app = create_app(tmp_path / 'ambiguous-edit.sqlite3')
+    calls = []
+
+    async def stream(*args, **kwargs):
+        """Simulate a provider emitting duplicate replacement keys."""
+        calls.append(True)
+        yield '{"replacements":[{"old":"Original example","new":"first","new":"second"}]}'
+
+    monkeypatch.setattr('src.app.generate', stream)
+    original = office(kind, 'Original example')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        upload = client.post('/api/attachments?filename=source.' + kind, content=original).json()
+        response = client.post('/api/missions', json={'prompt': 'Edit this source',
+            'bulter_ids': [bot['id'] for bot in bots], 'attachment_ids': [upload['id']],
+            'template_id': upload['id'], 'attachment_mode': 'edit', 'review_criteria': ['Preserve meaning']})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+        assert len(calls) == 1 and mission['status'] == 'failed'
+        assert mission['steps'][0]['status'] == 'failed'
+        assert 'invalid or ambiguous' in mission['error']
+        assert not mission.get('artifact_id')
+        assert mission['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{mission['id']}/export/{kind}").status_code == 400
+        assert base64.b64decode(app.state.store.get('attachment', upload['id'])['raw']) == original

@@ -358,3 +358,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - No historical date is inferred or backfilled. Existing source snapshots remain unchanged, and their dates remain unknown. Document/image upload limits and binary privacy boundaries are unchanged.
 - Validation: the DOCX/PPTX regression cases failed before the fix. All 383 tests pass, with three JavaScript syntax checks and the 76-file package gate. Three added cases cover timestamps bounded by upload execution, UTC awareness, preservation into mission registers and across app restart, and legacy sources remaining undated. No paid calls or private files were used.
 - Remaining: bounded research, source verification, section assembly, representative model/template/render validation and final end-to-end acceptance. This source-recording fix does not close any acceptance gate.
+
+
+### ART-001A unambiguous Office edit proposals: 3 November 2026
+
+- Office edit parsing now rejects duplicate JSON keys and unexpected fields at both proposal and replacement levels. Previously duplicate keys used the final value silently, and extra fields were ignored, allowing an ambiguous proposal to become a changed Office file.
+- Valid proposals still require exactly replacements containing old/new text, with unique exact paragraph targets and existing size limits. Invalid proposals return the existing sanitized correction message; no source text or payload fields are echoed. Two-agent author steps fail before artifact creation or peer review.
+- Validation: ten duplicate/extra-field regression cases failed before the fix. All 395 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Twelve new cases cover DOCX/PPTX duplicate new/old/list keys, extra fields and API rejection with unchanged source bytes, no reviewer call, no artifact and blocked export. Existing valid edit/recovery tests pass.
+- Remaining: section assembly, bounded research, representative model/template/render checks and final end-to-end acceptance. Prior mission history is unchanged; this parser fix does not close acceptance criteria.

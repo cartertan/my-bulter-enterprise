@@ -203,14 +203,27 @@ def edited_output(data: bytes, filename: str, mission: dict) -> bytes:
     raw = mission["steps"][-1]["output"].strip()
     if raw.startswith("```json") and raw.endswith("```"):
         raw = raw[7:-3].strip()
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict:
+        """Reject duplicate edit fields rather than allowing last-value-wins parsing."""
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate edit field")
+            result[key] = value
+        return result
+
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, object_pairs_hook=unique_fields)
+        if not isinstance(payload, dict) or set(payload) != {"replacements"}:
+            raise ValueError("Unexpected edit fields")
         edits = payload["replacements"]
         if not isinstance(edits, list) or not 1 <= len(edits) <= 100:
             raise ValueError
         paragraphs = office_paragraphs(data, filename)
         replacements = {}
         for edit in edits:
+            if not isinstance(edit, dict) or set(edit) != {"old", "new"}:
+                raise ValueError("Unexpected replacement fields")
             old, new = edit["old"], edit["new"]
             if not isinstance(old, str) or not isinstance(new, str) or not old or len(new) > 12000 or old in replacements or paragraphs.count(old) != 1:
                 raise ValueError
