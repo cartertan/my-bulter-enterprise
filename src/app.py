@@ -652,7 +652,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     @app.post("/api/documents/{identifier}/approve")
     async def approve_document(identifier: str) -> dict:
         """Write reviewed text to Obsidian as shared, local-only notes."""
-        if tasks:
+        if tasks or admission_lock.locked():
             raise HTTPException(409, "Wait for the current mission before importing memory.")
         document = store.get("document", identifier)
         if not document:
@@ -777,7 +777,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     @app.post("/api/obsidian/sync")
     async def obsidian_sync() -> dict:
         """Refresh only user-approved notes from the configured local vault."""
-        if tasks:
+        if tasks or admission_lock.locked():
             raise HTTPException(409, "Wait for the active mission before syncing memory.")
         try:
             return sync_notes(store, vault)
@@ -802,7 +802,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     @app.put("/api/credentials/{provider}")
     async def save_credential(provider: str, request: Request) -> dict:
         """Accept a write-only secret; never echo validation input back to the client."""
-        if tasks:
+        if tasks or admission_lock.locked():
             raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
         try:
             data = await request.json()
@@ -812,7 +812,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             raise HTTPException(400, "Provide a JSON object containing only api_key.")
         try:
             async with credential_lock:
-                if tasks:
+                if tasks or admission_lock.locked():
                     raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
                 return await asyncio.to_thread(credentials.save, provider, data["api_key"])
         except CredentialError as exc:
@@ -823,11 +823,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     @app.delete("/api/credentials/{provider}")
     async def remove_credential(provider: str) -> dict:
         """Disconnect the local Keychain entry; remote revocation is separate."""
-        if tasks:
+        if tasks or admission_lock.locked():
             raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
         try:
             async with credential_lock:
-                if tasks:
+                if tasks or admission_lock.locked():
                     raise HTTPException(409, "Finish or stop the active mission before changing credentials.")
                 return await asyncio.to_thread(credentials.remove, provider)
         except CredentialError as exc:
@@ -854,6 +854,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         existing = store.get("bulter", identifier)
         if not existing:
             raise HTTPException(404, "Bulter not found.")
+        if admission_lock.locked():
+            raise HTTPException(409, "Wait for mission preparation before removing a Bulter.")
         if any(m["status"] in ("queued", "running") and
                any(b["id"] == identifier for b in m["team"]) for m in store.all("mission")):
             raise HTTPException(409, "Stop or finish this Bulter's active mission before removing it.")

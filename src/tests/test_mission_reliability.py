@@ -1061,3 +1061,62 @@ def test_failed_preflight_releases_execution_reservation(tmp_path: Path, monkeyp
         assert client.post('/api/missions', json={'prompt': 'Invalid selection', 'bulter_ids': ['missing']}).status_code == 404
         assert client.post('/api/missions', json={'prompt': 'Valid selection', 'bulter_ids': [bot['id']]}).status_code == 200
         assert wait_mission(client)['status'] == 'completed'
+
+
+@pytest.mark.parametrize('operation', ['credential_save', 'credential_remove', 'memory_sync', 'memory_import', 'bulter_remove'])
+def test_preflight_blocks_mutations_that_require_idle_missions(tmp_path: Path, monkeypatch, operation: str) -> None:
+    """An awaited preflight is busy for credential, import/sync and removal boundaries."""
+    import asyncio
+    import httpx
+    from unittest.mock import Mock
+
+    async def scenario() -> None:
+        """Suspend a synthetic vision check and attempt one concurrent mutation."""
+        app = create_app(tmp_path / 'mutation-preflight.sqlite3')
+        entered, release = asyncio.Event(), asyncio.Event()
+        save, remove = Mock(return_value={}), Mock(return_value={})
+        monkeypatch.setattr(app.state.credentials, 'save', save)
+        monkeypatch.setattr(app.state.credentials, 'remove', remove)
+
+        async def vision(bots):
+            """Hold preflight without querying an installed model."""
+            entered.set()
+            await release.wait()
+
+        async def stream(*args, **kwargs):
+            """Hold synthetic execution until lifespan shutdown cancels it."""
+            await asyncio.Event().wait()
+            yield ''
+
+        monkeypatch.setattr('src.app.require_vision', vision)
+        monkeypatch.setattr('src.app.generate', stream)
+        app.state.store.put('attachment', {'id': 'photo', 'kind': 'image', 'text': '', 'image': '',
+                                          'filename': 'synthetic.png', 'raw': ''})
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1',
+                                         headers={'x-bulter-token': app.state.csrf}) as client:
+                bot = (await client.post('/api/bulters', json={'name': 'Author', 'role': 'Draft',
+                    'provider': 'ollama', 'model': 'synthetic'})).json()
+                first = asyncio.create_task(client.post('/api/missions', json={'prompt': 'Inspect synthetic input',
+                    'bulter_ids': [bot['id']], 'attachment_ids': ['photo']}))
+                await asyncio.wait_for(entered.wait(), 2)
+                try:
+                    if operation == 'credential_save':
+                        response = await client.put('/api/credentials/openai', json={'api_key': 'synthetic-test-value'})
+                    elif operation == 'credential_remove':
+                        response = await client.delete('/api/credentials/openai')
+                    elif operation == 'memory_sync':
+                        response = await client.post('/api/obsidian/sync')
+                    elif operation == 'memory_import':
+                        response = await client.post('/api/documents/missing/approve')
+                    else:
+                        response = await client.delete('/api/bulters/' + bot['id'])
+                finally:
+                    release.set()
+                    started = await first
+                assert started.status_code == 200 and response.status_code == 409
+                save.assert_not_called()
+                remove.assert_not_called()
+                assert not app.state.store.get('bulter', bot['id']).get('removed_at')
+
+    asyncio.run(scenario())
