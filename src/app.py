@@ -345,6 +345,16 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
     return result
 
 
+def review_response_schema(criteria: list[str], reviewed_hash: str) -> dict:
+    """Constrain local reviewer syntax while retaining independent semantic validation."""
+    schema = DraftReview.model_json_schema()
+    schema["properties"]["draft_hash"]["const"] = reviewed_hash
+    schema["properties"]["criteria"].update(minItems=len(criteria), maxItems=len(criteria))
+    schema["$defs"]["CriterionReview"]["properties"]["criterion_id"]["enum"] = [
+        f"criterion-{index + 1}" for index in range(len(criteria))]
+    return schema
+
+
 def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str) -> dict:
     """Fail closed on malformed, stale, forged or incomplete model assessments."""
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
@@ -904,8 +914,12 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         messages[0]["images"] = images
                     # Credentials are a separate call argument, never part of a bot or mission snapshot.
                     auth = {"api_key": await asyncio.to_thread(credentials.get, bot["provider"])} if is_cloud(bot["provider"]) else {}
+                    call_options = dict(bot)
+                    if bot["provider"] == "ollama" and author and criteria:
+                        # Ollama grammar controls syntax, not factual accuracy or acceptance.
+                        call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))
                     try:
-                        async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=bot, **auth)) as stream:
+                        async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=call_options, **auth)) as stream:
                             async for chunk in stream:
                                 budget = (mission["section_budgets"][section_index] if mission.get("section_budgets")
                                           else mission["handoff_budgets"])[bot_index]

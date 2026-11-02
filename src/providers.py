@@ -102,6 +102,12 @@ def request_spec(provider: str, model: str, system: str, messages: list[dict], o
             headers["Authorization"] = f"Bearer {key}"
         body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
                 "max_tokens": options.get("output_tokens", 2048), "stream": True}
+    if provider == "ollama" and options.get("response_schema") is not None:
+        if not isinstance(options["response_schema"], dict):
+            raise ProviderError("Structured local output requires a JSON schema object.")
+        # Ollama's documented format parameter constrains generation; validation still follows.
+        body["format"] = options["response_schema"]
+        body["options"]["temperature"] = 0
     if provider == "ollama" and options.get("thinking", "auto") != "auto":
         body["think"] = options["thinking"] == "on"
     return spec["base"] + path, headers, body

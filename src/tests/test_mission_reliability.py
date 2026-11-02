@@ -482,11 +482,14 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         calls.append(messages[0]['content'])
         assert 'criterion-1' in calls[-1]
         if len(calls) == 1:
+            assert 'response_schema' not in kwargs['options']
             yield draft
         elif verdict == 'invalid':
+            assert kwargs['options']['response_schema']['properties']['draft_hash']['const'] == draft_hash(draft)
             yield 'Author and Reviewer both agree.'
         else:
             assert draft_hash(draft) in calls[-1]
+            assert kwargs['options']['response_schema']['properties']['draft_hash']['const'] == draft_hash(draft)
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [
                 {'criterion_id': 'criterion-1', 'result': verdict, 'reason': 'Synthetic assessment',
                  'evidence_quotes': ['explicit consent'] if verdict == 'pass' else []}]})
@@ -500,6 +503,7 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         mission = wait_mission(client)
         assert mission['status'] == ('completed' if verdict == 'pass' else 'completed_with_issues')
         assert mission['acceptance_status'] == 'not_assessed'
+        assert all('response_schema' not in b for b in mission['team'])
         record = mission['steps'][1]['review']
         assert record['reviewer_id'] == bots[1]['id'] and record['author_id'] == bots[0]['id']
         assert record['draft_hash'] == draft_hash(draft)
@@ -808,3 +812,16 @@ def test_invalid_review_diagnostics_do_not_echo_payload(output: str) -> None:
     result = validate_draft_review(output, author, ['Synthetic criterion'], 'reviewer')
     assert result['state'] == 'invalid' and result['error_code'] in {'review_json', 'review_schema'}
     assert 'PRIVATE_PAYLOAD_MARKER' not in json.dumps(result)
+
+
+def test_review_schema_is_fresh_and_bound_to_requested_criteria() -> None:
+    """A previous call cannot contaminate another mission's response constraints."""
+    from src.app import review_response_schema
+    first = review_response_schema(['One', 'Two'], 'a' * 64)
+    second = review_response_schema(['Other'], 'b' * 64)
+    assert first['properties']['draft_hash']['const'] == 'a' * 64
+    assert second['properties']['draft_hash']['const'] == 'b' * 64
+    assert first['properties']['criteria']['minItems'] == first['properties']['criteria']['maxItems'] == 2
+    assert second['$defs']['CriterionReview']['properties']['criterion_id']['enum'] == ['criterion-1']
+    assert first['additionalProperties'] is False
+    assert first['$defs']['CriterionReview']['additionalProperties'] is False
