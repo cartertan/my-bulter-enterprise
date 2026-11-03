@@ -406,3 +406,11 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Ordinary timed-outline schemas are unchanged, and per-request schema construction does not mutate stored bot configuration or the base schema. Runtime construction checks remain authoritative: diagram/picture panels still require body text at most 420 characters, with line/height and other semantic rules checked separately. No content is silently truncated or repaired.
 - Validation: 411 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Two new cases verify default/exact-count schemas and isolation from ordinary outlines. Existing composition integration tests now assert the bounds actually sent to the author; all overflow/rejection tests pass. No real-model improvement rate or rendering acceptance is claimed.
 - Remaining: bounded research, section assembly, representative model/template/render checks and final end-to-end acceptance. This reduces a schema/layout mismatch but does not complete any acceptance gate.
+
+
+### REL-002 nested Word table evidence: 3 November 2026
+
+- Word ingestion now reads nested table cells in document order instead of silently omitting their text. Nested evidence counts toward the existing extraction and attachment limits. Merged grid positions are visited once per underlying cell so they do not multiply nested content.
+- Added an explicit 32-level table-nesting bound with a clear rejection message. No automatic flattening, truncation or source rewrite occurs. Existing snapshots stay unchanged; re-upload is needed for previously omitted content. This is textual extraction, not preservation of visual table geometry.
+- Validation: three omission/budget/upload regressions failed before the fix. All 416 tests pass, three JavaScript syntax checks and the 76-file package gate pass. Five added cases cover nested paragraph/table ordering, reference-limit rejection, authenticated snapshot retention, excessive nesting rejection and deduplication of merged cells. Existing ordinary document and Office round-trip tests pass.
+- Remaining: bounded research, section assembly, representative model/template/render validation and final end-to-end acceptance. No private sources or paid calls were used; no acceptance criteria closed.

@@ -13,10 +13,34 @@ import json
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Any
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_TEXT = 120_000
 EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".pptx"}
+
+
+def word_block_text(container: Any, depth: int = 0) -> str:
+    """Read paragraphs and nested tables in order with an explicit nesting bound."""
+    if depth > 32:
+        raise ValueError("Word table nesting exceeds the supported limit. Flatten deeply nested tables first.")
+    parts = []
+    for block in container.iter_inner_content():
+        if hasattr(block, "text"):
+            parts.append(block.text)
+        else:
+            rows, seen = [], set()
+            for row in block.rows:
+                cells = []
+                for cell in row.cells:
+                    # Merged grid positions reference the same cell; do not amplify nested text.
+                    if cell._tc not in seen:
+                        seen.add(cell._tc)
+                        cells.append(word_block_text(cell, depth + 1))
+                if cells:
+                    rows.append(" | ".join(cells))
+            parts.append("\n".join(rows))
+    return "\n".join(parts)
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -40,9 +64,7 @@ def extract_text(data: bytes, filename: str) -> str:
         elif suffix == ".docx":
             from docx import Document
             document = Document(io.BytesIO(data))
-            text = "\n".join(block.text if hasattr(block, "text") else
-                             "\n".join(" | ".join(c.text for c in row.cells) for row in block.rows)
-                             for block in document.iter_inner_content())
+            text = word_block_text(document)
         elif suffix == ".pptx":
             from pptx import Presentation
             deck = Presentation(io.BytesIO(data))
