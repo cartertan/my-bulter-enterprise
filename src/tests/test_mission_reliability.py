@@ -1185,7 +1185,8 @@ def test_combined_section_timing_recomputes_complete_owned_drafts(variant: str) 
 
 
 @pytest.mark.parametrize('recovery', [False, True])
-def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool) -> None:
+@pytest.mark.parametrize('exact', [False, True])
+def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool, exact: bool) -> None:
     """Individual passes cannot hide aggregate overrun; explicit revision can fix it."""
     import json
     from src.app import draft_hash
@@ -1205,6 +1206,10 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
             raise ProviderError('Synthetic interruption')
         if not is_reviewer:
             assert 'budget is shared by ALL sections' in content
+            if exact:
+                assert 'Required slide count across all 2 sections combined: exactly 2.' in content
+                assert 'Required total duration across all 2 sections combined: exactly 100 seconds' in content
+                assert kwargs['options']['response_schema']['properties']['slides']['minItems'] == 1
             if phase['revision']:
                 assert 'combined_section_timing' in content and '"total_seconds": 140' in content
             drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else 60, 10))
@@ -1219,7 +1224,8 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
         response = client.post('/api/missions', json={'prompt': 'Draft wallet sections',
             'bulter_ids': [bot['id'] for bot in bots], 'sections': ['Issue', 'Present'],
-            'review_criteria': ['Include consent'], 'duration_budget_seconds': 100})
+            'review_criteria': ['Include consent'], 'duration_budget_seconds': 100,
+            **({'expected_slide_count': 2, 'exact_duration_seconds': 100} if exact else {})})
         assert response.status_code == 200
         original = wait_mission(client)
         if recovery:
@@ -1230,7 +1236,7 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
             assert len(calls) == 5  # One failed call, with the completed first pair reused.
         assert original['status'] == 'completed_with_issues'
         assert original['section_timing_check']['total_seconds'] == 140
-        assert original['section_timing_check']['state'] == 'exceeded'
+        assert original['section_timing_check']['state'] == ('invalid' if exact else 'exceeded')
         assert all(step['review_state'] == 'criteria_pass' for step in original['steps'][1::2])
         phase['revision'] = True
         response = client.post(f"/api/missions/{original['id']}/revise", json={})
@@ -1243,11 +1249,43 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         assert app.state.store.get('mission', original['id']) == original
 
 
-@pytest.mark.parametrize('unsupported', [{'compose_presentation': True}, {'expected_slide_count': 2}, {'exact_duration_seconds': 100}])
+@pytest.mark.parametrize('unsupported', [{'compose_presentation': True}])
 def test_timed_sections_reject_unimplemented_whole_artifact_targets(unsupported: dict) -> None:
     """Do not apply whole-deck targets separately to each section or claim assembly."""
     from pydantic import ValidationError
     from src.app import MissionInput
-    with pytest.raises(ValidationError, match='artifact assembly or exact whole-presentation targets'):
+    with pytest.raises(ValidationError, match='artifact assembly'):
         MissionInput(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
                      review_criteria=['Consent'], duration_budget_seconds=100, **unsupported)
+
+
+@pytest.mark.parametrize('count,duration,state,mismatches', [
+    (2, 80, 'pass', []), (3, 80, 'invalid', ['slide_count']),
+    (2, 81, 'invalid', ['exact_duration']), (3, 81, 'invalid', ['slide_count', 'exact_duration']),
+])
+def test_exact_targets_apply_to_combined_sections(count: int, duration: int, state: str, mismatches: list[str]) -> None:
+    """Exact targets validate the aggregate, never each individual section."""
+    import json
+    from src.app import validate_section_timing
+    mission = {'duration_budget_seconds': 100, 'expected_slide_count': count, 'exact_duration_seconds': duration,
+        'team': [{'id': 'author'}, {'id': 'reviewer'}], 'sections': ['Issue', 'Present'],
+        'steps': [{'bulter_id': 'author', 'section_id': f'section-{i + 1}', 'status': 'completed',
+                   'output': json.dumps(timed_outline(30, 10))} for i in range(2)]}
+    result = validate_section_timing(mission)
+    assert result['state'] == state and result['total_seconds'] == 80
+    assert result.get('constraint_mismatches', []) == mismatches
+    assert result['expected_slide_count'] == count and result['exact_duration_seconds'] == duration
+    assert all(item['state'] == 'pass' and 'expected_slide_count' not in item for item in result['sections'])
+
+
+@pytest.mark.parametrize('targets,message', [
+    ({'expected_slide_count': 1}, 'at least one slide per section'),
+    ({'exact_duration_seconds': 1}, 'at least one second per section'),
+])
+def test_impossible_section_targets_rejected_before_inference(targets: dict, message: str) -> None:
+    """Each nonempty section needs a slide with at least one declared second."""
+    from pydantic import ValidationError
+    from src.app import MissionInput
+    with pytest.raises(ValidationError, match=message):
+        MissionInput(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
+                     review_criteria=['Consent'], duration_budget_seconds=100, **targets)

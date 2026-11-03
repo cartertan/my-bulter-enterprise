@@ -319,6 +319,7 @@ function renderDetail() {
   if (mission.section_timing_check) {
     const timing = mission.section_timing_check;
     panel.append(el('p', 'help', `Combined section timing: ${timing.state} · ${timing.total_seconds ?? 'unverified'}/${timing.budget_seconds} seconds including all section discussion. Declared timings only; no assembled deck or acceptance is established.`));
+    if (timing.expected_slide_count != null || timing.exact_duration_seconds != null) panel.append(el('p', 'help', `Combined exact targets: ${timing.slide_count ?? 'unverified'}/${timing.expected_slide_count ?? 'unspecified'} slides · ${timing.total_seconds ?? 'unverified'}/${timing.exact_duration_seconds ?? 'unspecified'} seconds.`));
     if (timing.error) panel.append(el('p', 'error', timing.error));
   }
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
