@@ -132,3 +132,46 @@ def test_source_labels_distinguish_retrieved_from_pasted_evidence() -> None:
     result = subprocess.run(['node', '-e', function + '\nconsole.log(JSON.stringify(' + json.dumps(inputs) + '.map(sourceEvidenceLabel)))'], capture_output=True, text=True, check=True)
     assert json.loads(result.stdout) == ['retrieved 2026-11-03; static text only',
         'user-provided; page not fetched', 'user-provided; page not fetched']
+
+
+@pytest.mark.parametrize('variant', ['valid', 'not_found', 'oversized', 'wrong_type', 'repeated'])
+def test_exact_web_excerpt_keeps_scope_and_citation_boundary(tmp_path, variant: str) -> None:
+    """An exact passage beyond the preview limit is usable without citing omitted text."""
+    import hashlib
+    import io
+    import json
+    from pptx import Presentation
+    from src.app import validate_sources
+    from src.presentation_builder import compose_presentation
+    from src.tests.test_mission_reliability import timed_outline
+    excerpt = 'The holder gives explicit consent.'
+    full_text = 'Unselected context. ' * 400 + excerpt + '\nOther page content.'
+    if variant == 'repeated':
+        full_text += '\n' + excerpt
+    submitted = {'not_found': 'Invented excerpt', 'oversized': 'x' * 6001, 'wrong_type': 42}.get(variant, excerpt)
+    app = create_app(tmp_path / 'excerpt.sqlite3')
+    page = {'text': full_text, 'source_url': 'https://example.org/page', 'retrieved_bytes': len(full_text), 'scope': 'static text'}
+    with TestClient(app) as client, patch('src.web_evidence.fetch_public_page', return_value=page) as fetch:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/connectors/web/read', json={'url': page['source_url'], 'excerpt': submitted})
+        if variant in {'not_found', 'oversized', 'wrong_type'}:
+            assert response.status_code == 400 and app.state.store.all('connector_evidence') == []
+            if variant != 'not_found':
+                fetch.assert_not_called()
+            return
+        record = response.json()
+        assert response.status_code == 200 and record['content'] == excerpt and not record['truncated']
+        assert record['excerpt_start'] == full_text.index(excerpt) > 6000
+        assert record['excerpt_end'] - record['excerpt_start'] == len(excerpt)
+        assert record['page_text_sha256'] == hashlib.sha256(full_text.encode()).hexdigest()
+        assert record['page_text_length'] == len(full_text) and record['local_only']
+        assert 'not the whole page' in record['scope']
+        registry = source_register([], [record])
+        assert registry[0]['scope'] == record['scope'] and registry[0]['excerpt_start'] == record['excerpt_start']
+        outline = timed_outline(60, 0)
+        outline['slides'][0]['claims'] = [{'text': 'Consent is needed', 'evidence': [{'source_id': record['id'], 'quote': excerpt}]}]
+        assert validate_sources(json.dumps(outline), [], [record], True)['state'] == 'references_valid'
+        deck = Presentation(io.BytesIO(compose_presentation(outline, registry)))
+        assert record['scope'] in deck.slides[0].notes_slide.notes_text_frame.text
+        outline['slides'][0]['claims'][0]['evidence'][0]['quote'] = 'Other page content.'
+        assert validate_sources(json.dumps(outline), [], [record], True)['state'] == 'invalid'

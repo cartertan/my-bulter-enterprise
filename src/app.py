@@ -397,6 +397,9 @@ def source_register(attachments: list[dict], evidence: list[dict]) -> list[dict]
                     records[-1].update(source_url=item["source_url"], provenance=item.get("provenance", "unverified"))
                 if item.get("retrieved_at"):
                     records[-1]["retrieved_at"] = item["retrieved_at"]
+                for key in ("scope", "excerpt_start", "excerpt_end", "page_text_length", "page_text_sha256"):
+                    if key in item:
+                        records[-1][key] = item[key]
     return records
 
 

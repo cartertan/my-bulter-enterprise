@@ -96,17 +96,27 @@ def install_connector_routes(app: FastAPI, connectors: Connectors) -> None:
         """Fetch only a URL the user explicitly submits, without model tool access."""
         from src.web_evidence import fetch_public_page
         from src.connectors import timestamp
-        data = await body(request, {"url"})
+        data = await body(request, {"url", "excerpt"})
         url = text_field(data, "url", 2048)
+        excerpt = text_field(data, "excerpt", 6000, False)
         async with connectors.lock:
             try:
                 page = await asyncio.to_thread(fetch_public_page, url)
             except ValueError as exc:
                 raise ConnectorError(str(exc)) from None
-            record = connectors.evidence("web", "Retrieved public page", page["text"])
+            if excerpt and excerpt not in page["text"]:
+                raise ConnectorError("The exact excerpt was not found in the retrieved static text. No evidence was saved.")
+            record = connectors.evidence("web", "Retrieved public page excerpt" if excerpt else "Retrieved public page", excerpt or page["text"])
             record.update(source_url=page["source_url"], retrieved_at=timestamp(),
                           provenance="public_https_fetch; static_text_only", scope=page["scope"],
                           retrieved_bytes=page["retrieved_bytes"])
+            if excerpt:
+                import hashlib
+                start = page["text"].index(excerpt)
+                record.update(scope="user-selected exact excerpt of retrieved static text; not the whole page",
+                              excerpt_start=start, excerpt_end=start + len(excerpt),
+                              page_text_length=len(page["text"]),
+                              page_text_sha256=hashlib.sha256(page["text"].encode()).hexdigest())
             return connectors.store.put("connector_evidence", record)
 
     @app.post("/api/connectors/manual")
