@@ -658,6 +658,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
     connectors = Connectors(store, credentials)
     credential_lock = asyncio.Lock()
     admission_lock = asyncio.Lock()
+    section_draft_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def mission_admission() -> AsyncIterator[None]:
@@ -863,7 +864,27 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                               **slide_origins[slide["slide_id"]], "artifact_review": "not_assessed",
                               "user_acceptance": "not_assessed"}
                 slide["speaker_notes"] += "\nSection assembly provenance (application-generated):\n" + json.dumps(provenance, sort_keys=True)
-            data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], template_bytes, image_assets)
+            # Freeze the exact inspection bytes once. Rebuilding a ZIP on each download
+            # can change its hash, leaving subsequent review evidence tied to another file.
+            async with section_draft_lock:
+                retained = store.get("section_draft", identifier)
+                mission_revision = revision_hash(mission)
+                if retained:
+                    if retained.get("mission_id") != identifier or retained.get("mission_revision") != mission_revision:
+                        raise ValueError("Inspection source revision changed.")
+                    data = base64.b64decode(retained["raw"], validate=True)
+                    if hashlib.sha256(data).hexdigest() != retained.get("sha256"):
+                        raise ValueError("Inspection bytes changed.")
+                    projection = office_paragraphs(data, "inspection.pptx", include_notes=True)
+                    if projection != retained.get("paragraphs"):
+                        raise ValueError("Inspection text changed.")
+                else:
+                    data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], template_bytes, image_assets)
+                    projection = office_paragraphs(data, "inspection.pptx", include_notes=True)
+                    store.put("section_draft", {"id": identifier, "mission_id": identifier,
+                        "mission_revision": mission_revision, "sha256": hashlib.sha256(data).hexdigest(),
+                        "raw": base64.b64encode(data).decode(), "paragraphs": projection,
+                        "artifact_review_status": "not_assessed", "acceptance_status": "not_assessed"})
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(409, "Section PowerPoint inspection is unavailable: check complete reviews, timing, source references, selected pictures/template and layout limits. No content was omitted.") from exc
         # Outline peer reviews do not cover these new bytes or their rendered appearance.

@@ -1194,6 +1194,12 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             assert response.headers['x-artifact-sha256'] == hashlib.sha256(response.content).hexdigest()
             assert 'artifact-review-not-assessed' in response.headers['x-artifact-purpose']
             assert response.headers['cache-control'] == 'no-store'
+            from unittest.mock import patch
+            with patch('src.app.compose_presentation', side_effect=AssertionError('Do not rebuild retained bytes')):
+                repeat = client.get('/api/missions/sections/outline/pptx')
+            assert repeat.status_code == 200 and repeat.content == response.content
+            retained = app.state.store.get('section_draft', 'sections')
+            assert retained['artifact_review_status'] == retained['acceptance_status'] == 'not_assessed'
             deck = Presentation(io.BytesIO(response.content))
             assert len(deck.slides) == 2
             if variant == 'template_valid':
@@ -1218,3 +1224,54 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
         assert app.state.store.get('mission', mission['id']) == before
         assert app.state.store.all('artifact') == []
         assert client.get('/api/missions/sections/export/pptx').status_code == 400
+
+
+@pytest.mark.parametrize('change', ['none', 'bytes', 'hash', 'projection', 'owner', 'revision', 'mission'])
+def test_retained_section_inspection_survives_restart_and_rejects_changes(tmp_path: Path, change: str) -> None:
+    """A restart keeps identical inspection bytes; changed evidence fails closed."""
+    import copy
+    from unittest.mock import patch
+    from src.app import draft_hash
+    from src.tests.test_mission_reliability import timed_outline
+    database = tmp_path / 'retained-section.sqlite3'
+    app = create_app(database)
+    output = json.dumps(timed_outline(60, 0))
+    mission = {'id': 'retained', 'status': 'completed', 'sections': ['Consent'],
+        'team': [{'id': 'a'}, {'id': 'b'}], 'duration_budget_seconds': 60,
+        'review_criteria': ['Consent'], 'acceptance_status': 'not_assessed', 'steps': [
+            {'bulter_id': 'a', 'section_id': 'section-1', 'draft_revision': 1, 'status': 'completed', 'output': output},
+            {'bulter_id': 'b', 'section_id': 'section-1', 'status': 'completed', 'output': json.dumps({
+                'draft_hash': draft_hash(output), 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass',
+                    'reason': 'Synthetic', 'evidence_quotes': ['Explicit consent']}]})}]}
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        app.state.store.put('mission', mission)
+        response = client.get('/api/missions/retained/outline/pptx')
+        assert response.status_code == 200
+    record = app.state.store.get('section_draft', 'retained')
+    if change == 'bytes':
+        record['raw'] = base64.b64encode(b'Changed').decode()
+    elif change == 'hash':
+        record['sha256'] = '0' * 64
+    elif change == 'projection':
+        record['paragraphs'] = ['Changed text']
+    elif change == 'owner':
+        record['mission_id'] = 'other'
+    elif change == 'revision':
+        record['mission_revision'] = '0' * 64
+    elif change == 'mission':
+        mission['prompt'] = 'Changed mission brief'
+        app.state.store.put('mission', mission)
+    app.state.store.put('section_draft', record)
+    before = copy.deepcopy(record)
+    restarted = create_app(database)
+    with TestClient(restarted) as client, patch('src.app.compose_presentation', side_effect=AssertionError('Do not regenerate')):
+        client.headers['x-bulter-token'] = restarted.state.csrf
+        result = client.get('/api/missions/retained/outline/pptx')
+        assert result.status_code == (200 if change == 'none' else 409)
+        if change == 'none':
+            assert result.content == response.content
+            assert result.headers['x-artifact-sha256'] == response.headers['x-artifact-sha256']
+        assert restarted.state.store.get('section_draft', 'retained') == before
+        assert restarted.state.store.get('mission', 'retained')['acceptance_status'] == 'not_assessed'
+        assert client.get('/api/missions/retained/export/pptx').status_code == 400
