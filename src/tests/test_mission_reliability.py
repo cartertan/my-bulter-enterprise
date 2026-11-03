@@ -1151,3 +1151,103 @@ def test_composed_author_schema_uses_layout_limits_without_mutating_outline_sche
     assert composed['properties']['slides']['maxItems'] == (count or 60)
     assert author_response_schema(False) == original
     assert TimedPresentation.model_json_schema() == original
+
+
+@pytest.mark.parametrize('variant', ['pass', 'overrun', 'missing', 'duplicate', 'wrong_author', 'partial', 'invalid'])
+def test_combined_section_timing_recomputes_complete_owned_drafts(variant: str) -> None:
+    """Reject incomplete/misattributed scopes and ignore stale cached verdicts."""
+    import json
+    from src.app import validate_section_timing
+    steps = [{'bulter_id': 'author', 'section_id': f'section-{i + 1}', 'status': 'completed',
+              'output': json.dumps(timed_outline(30, 10)), 'timing_check': {'state': 'pass', 'total_seconds': 0}}
+             for i in range(2)]
+    if variant == 'overrun':
+        steps[1]['output'] = json.dumps(timed_outline(51, 10))
+    elif variant == 'missing':
+        steps.pop()
+    elif variant == 'duplicate':
+        steps[1]['section_id'] = 'section-1'
+    elif variant == 'wrong_author':
+        steps[1]['bulter_id'] = 'reviewer'
+    elif variant == 'partial':
+        steps[1]['status'] = 'partial'
+    elif variant == 'invalid':
+        steps[1]['output'] = 'Not a timed outline'
+    mission = {'duration_budget_seconds': 100, 'team': [{'id': 'author'}, {'id': 'reviewer'}],
+               'sections': ['Issue', 'Present'], 'steps': steps}
+    check = validate_section_timing(mission)
+    assert check['state'] == ('pass' if variant == 'pass' else 'exceeded' if variant == 'overrun' else 'invalid')
+    if variant in {'pass', 'overrun'}:
+        assert check['total_seconds'] == (80 if variant == 'pass' else 101)
+        assert check['discussion_seconds'] == 20 and check['slide_count'] == 2
+    else:
+        assert 'total_seconds' not in check
+
+
+@pytest.mark.parametrize('recovery', [False, True])
+def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool) -> None:
+    """Individual passes cannot hide aggregate overrun; explicit revision can fix it."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'combined-timing.sqlite3')
+    calls = []
+    drafts = {}
+    phase = {'revision': False, 'fail_once': recovery}
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return section-local drafts/reviews with a resumable interruption."""
+        content = messages[0]['content']
+        calls.append(content)
+        scope = 'Issue' if 'CURRENT SECTION ONLY:\nIssue' in content else 'Present'
+        is_reviewer = 'draft_hash' in kwargs.get('options', {}).get('response_schema', {}).get('properties', {})
+        if scope == 'Present' and phase['fail_once']:
+            phase['fail_once'] = False
+            raise ProviderError('Synthetic interruption')
+        if not is_reviewer:
+            assert 'budget is shared by ALL sections' in content
+            if phase['revision']:
+                assert 'combined_section_timing' in content and '"total_seconds": 140' in content
+            drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else 60, 10))
+            yield drafts[scope]
+        else:
+            yield json.dumps({'draft_hash': draft_hash(drafts[scope]), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Contains consent',
+                 'evidence_quotes': ['Explicit consent']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft wallet sections',
+            'bulter_ids': [bot['id'] for bot in bots], 'sections': ['Issue', 'Present'],
+            'review_criteria': ['Include consent'], 'duration_budget_seconds': 100})
+        assert response.status_code == 200
+        original = wait_mission(client)
+        if recovery:
+            assert original['status'] == 'failed' and original['section_timing_check']['state'] == 'invalid'
+            response = client.post(f"/api/missions/{original['id']}/resume", json={})
+            assert response.status_code == 200
+            original = wait_mission(client)
+            assert len(calls) == 5  # One failed call, with the completed first pair reused.
+        assert original['status'] == 'completed_with_issues'
+        assert original['section_timing_check']['total_seconds'] == 140
+        assert original['section_timing_check']['state'] == 'exceeded'
+        assert all(step['review_state'] == 'criteria_pass' for step in original['steps'][1::2])
+        phase['revision'] = True
+        response = client.post(f"/api/missions/{original['id']}/revise", json={})
+        assert response.status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed' and child['section_timing_check']['total_seconds'] == 100
+        assert child['section_timing_check']['state'] == 'pass'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
+        assert app.state.store.get('mission', original['id']) == original
+
+
+@pytest.mark.parametrize('unsupported', [{'compose_presentation': True}, {'expected_slide_count': 2}, {'exact_duration_seconds': 100}])
+def test_timed_sections_reject_unimplemented_whole_artifact_targets(unsupported: dict) -> None:
+    """Do not apply whole-deck targets separately to each section or claim assembly."""
+    from pydantic import ValidationError
+    from src.app import MissionInput
+    with pytest.raises(ValidationError, match='artifact assembly or exact whole-presentation targets'):
+        MissionInput(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
+                     review_criteria=['Consent'], duration_budget_seconds=100, **unsupported)

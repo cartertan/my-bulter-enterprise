@@ -316,6 +316,11 @@ function renderDetail() {
       panel.append(el('p', 'help', `Section ${index + 1}: ${scope} · ${complete}/${mission.team.length} calls completed · acceptance not assessed`));
     }
   }
+  if (mission.section_timing_check) {
+    const timing = mission.section_timing_check;
+    panel.append(el('p', 'help', `Combined section timing: ${timing.state} · ${timing.total_seconds ?? 'unverified'}/${timing.budget_seconds} seconds including all section discussion. Declared timings only; no assembled deck or acceptance is established.`));
+    if (timing.error) panel.append(el('p', 'error', timing.error));
+  }
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
   for (const source of mission.source_register || []) panel.append(el('p', 'help', `Source ${source.source_id}: ${source.title} · ${source.origin} · recorded ${source.recorded_at || 'date unavailable'} · SHA-256 ${source.content_sha256}`));
   renderMissionAttachments(mission, panel);
