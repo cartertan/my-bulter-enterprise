@@ -841,6 +841,16 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     raise ValueError("Selected picture is missing or changed.")
                 image_assets[image_id] = {"bytes": base64.b64decode(attachment["image"], validate=True),
                                           "filename": attachment["filename"]}
+            # Carry provenance into the downloaded file, not only its companion JSON.
+            slide_origins = {mapping["assembled_slide_id"]: {"section_id": section["section_id"],
+                "source_slide_id": mapping["source_slide_id"], "draft_sha256": section["draft_hash"],
+                "reviewer_id": section["reviewer_id"]}
+                for section in outline["sections"] for mapping in section["slides"]}
+            for slide in outline["manifest"]["slides"]:
+                provenance = {"mission_id": mission["id"], "assembled_slide_id": slide["slide_id"],
+                              **slide_origins[slide["slide_id"]], "artifact_review": "not_assessed",
+                              "user_acceptance": "not_assessed"}
+                slide["speaker_notes"] += "\nSection assembly provenance (application-generated):\n" + json.dumps(provenance, sort_keys=True)
             data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], None, image_assets)
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(409, "Section PowerPoint inspection is unavailable: check complete reviews, timing, source references, selected pictures and layout limits. No content was omitted.") from exc

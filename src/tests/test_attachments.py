@@ -1187,6 +1187,16 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             text = office_paragraphs(response.content, 'draft.pptx', include_notes=True)
             assert 'Section 1' in text and 'Section 2' in text and 'Consent' in text and 'Issue' in text
             assert any('Notes 2' in part for part in text)
+            for index, slide in enumerate(deck.slides):
+                notes = slide.notes_slide.notes_text_frame.text
+                provenance_text = notes.split('Section assembly provenance (application-generated):\n', 1)[1].split('\nSpeaking time:', 1)[0]
+                provenance = json.loads(provenance_text)
+                assert provenance == {'mission_id': 'sections', 'assembled_slide_id': f'section-{index + 1}-slide-1',
+                    'section_id': f'section-{index + 1}', 'source_slide_id': 'slide-1',
+                    'draft_sha256': draft_hash(before['steps'][index * 2]['output']), 'reviewer_id': 'b',
+                    'artifact_review': 'not_assessed', 'user_acceptance': 'not_assessed'}
+                assert notes.startswith(f'Notes {index + 1}\n')
+                assert draft_hash(before['steps'][(1 - index) * 2]['output']) not in notes
             if image_id:
                 assert any(shape.shape_type == 13 for shape in deck.slides[1].shapes)
         assert app.state.store.get('mission', mission['id']) == before
