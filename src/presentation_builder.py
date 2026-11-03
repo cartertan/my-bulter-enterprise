@@ -22,6 +22,12 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from src.attachments import office_paragraphs, citation_target_allowed
 
 
+TITLE_LIMIT = 90
+BODY_LIMIT = 700
+PANEL_BODY_LIMIT = 420
+FLOW_LABEL_LIMIT = 50
+
+
 def compose_presentation(manifest: dict, sources: list[dict], template: bytes | None = None,
                          images: dict[str, dict] | None = None) -> bytes:
     """Build real editable text, flow shapes, timing and provenance speaker notes."""
@@ -99,9 +105,9 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
             raise ValueError('Picture slides require a selected image, a caption up to 120 characters and no flow diagram on the same slide.')
         if any(re.search(r'\{\{[^}]+\}\}', value) for value in [item['title'], item['body'], item['speaker_notes'], caption, *flow]):
             raise ValueError('Resolve template placeholders before composing the presentation.')
-        if len(item['title']) > 90 or len(item['body']) > (420 if flow or image_id else 700):
+        if len(item['title']) > TITLE_LIMIT or len(item['body']) > (PANEL_BODY_LIMIT if flow or image_id else BODY_LIMIT):
             raise ValueError('Slide text exceeds the standard layout budget. Shorten the title or body; nothing was omitted.')
-        if flow and (not 2 <= len(flow) <= 5 or any(not value.strip() or len(value) > 50 for value in flow)):
+        if flow and (not 2 <= len(flow) <= 5 or any(not value.strip() or len(value) > FLOW_LABEL_LIMIT for value in flow)):
             raise ValueError('A flow diagram needs two to five labels of at most 50 characters.')
         citations = sorted({entry['source_id'] for claim in item.get('claims', []) for entry in claim['evidence']})
         if len(citations) > 4 or any(identifier not in source_names for identifier in citations):

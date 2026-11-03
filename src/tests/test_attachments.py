@@ -454,6 +454,9 @@ def test_composed_presentation_contains_editable_diagram_and_notes(tmp_path: Pat
             assert schema['$defs']['TimedSlide']['properties']['duration_seconds']['minimum'] == 1
             assert schema['properties']['discussion_seconds']['minimum'] == 0
             assert schema['additionalProperties'] is False
+            assert schema['$defs']['TimedSlide']['properties']['title']['maxLength'] == 90
+            assert schema['$defs']['TimedSlide']['properties']['body']['maxLength'] == 700
+            assert schema['$defs']['TimedSlide']['properties']['flow_steps']['items']['maxLength'] == 50
             if use_picture == 'omitted':
                 manifest['slides'] = manifest['slides'][:1]
             yield json.dumps(manifest)

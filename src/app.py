@@ -41,7 +41,7 @@ from src.attachment_routes import install_attachment_routes, public_attachment, 
 from src.credentials import Credentials, CredentialError, PROVIDERS as KEY_PROVIDERS
 from src.connectors import Connectors, ConnectorError
 from src.connector_routes import install_connector_routes
-from src.presentation_builder import compose_presentation
+from src.presentation_builder import compose_presentation, TITLE_LIMIT, BODY_LIMIT, FLOW_LABEL_LIMIT
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
@@ -266,6 +266,19 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
         return TimedPresentation.model_validate(json.loads(output, object_pairs_hook=unique_json_fields))
     except (ValueError, TypeError) as exc:
         raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, unique slide IDs, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
+
+
+def author_response_schema(compose: bool, expected_slide_count: int | None = None) -> dict:
+    """Bound local author output to the selected layout without changing ordinary outlines."""
+    schema = TimedPresentation.model_json_schema()
+    if compose:
+        fields = schema["$defs"]["TimedSlide"]["properties"]
+        fields["title"]["maxLength"] = TITLE_LIMIT
+        fields["body"]["maxLength"] = BODY_LIMIT
+        fields["flow_steps"]["items"]["maxLength"] = FLOW_LABEL_LIMIT
+    if expected_slide_count is not None:
+        schema["properties"]["slides"].update(minItems=expected_slide_count, maxItems=expected_slide_count)
+    return schema
 
 
 def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False, expected_slide_count: int | None = None, exact_duration_seconds: int | None = None) -> str:
@@ -974,10 +987,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     call_options = dict(bot)
                     if bot["provider"] == "ollama" and bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         # Use the same field types and bounds as post-generation validation.
-                        call_options["response_schema"] = TimedPresentation.model_json_schema()
-                        if mission.get("expected_slide_count") is not None:
-                            call_options["response_schema"]["properties"]["slides"].update(
-                                minItems=mission["expected_slide_count"], maxItems=mission["expected_slide_count"])
+                        call_options["response_schema"] = author_response_schema(
+                            mission.get("compose_presentation", False), mission.get("expected_slide_count"))
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))

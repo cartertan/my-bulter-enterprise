@@ -1135,3 +1135,19 @@ def test_duplicate_slide_identity_is_invalid_for_all_outline_consumers(second_id
         parse_presentation_outline(output)
     assert validate_timing(output, 120)['state'] == 'invalid'
     assert validate_sources(output, [], [{'id': 's', 'content': 'Consent'}], True)['state'] == 'invalid'
+
+
+@pytest.mark.parametrize('count', [None, 3])
+def test_composed_author_schema_uses_layout_limits_without_mutating_outline_schema(count: int | None) -> None:
+    """Composition requests cannot advertise bounds larger than the layout supports."""
+    from src.app import author_response_schema, TimedPresentation
+    original = TimedPresentation.model_json_schema()
+    composed = author_response_schema(True, count)
+    properties = composed['$defs']['TimedSlide']['properties']
+    assert properties['title']['maxLength'] == 90
+    assert properties['body']['maxLength'] == 700
+    assert properties['flow_steps']['items']['maxLength'] == 50
+    assert composed['properties']['slides']['minItems'] == (count or 1)
+    assert composed['properties']['slides']['maxItems'] == (count or 60)
+    assert author_response_schema(False) == original
+    assert TimedPresentation.model_json_schema() == original
