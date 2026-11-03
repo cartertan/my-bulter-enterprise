@@ -1128,7 +1128,7 @@ def test_render_extraction_markers_are_diagnostic_not_acceptance(rendered: str, 
     assert text_presence([rendered], rendered)['state'] == 'present'
 
 
-@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed'])
+@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed', 'template_valid', 'template_changed', 'template_missing'])
 def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> None:
     """Compose ordered section drafts without promoting their reviews to new bytes."""
     import copy
@@ -1142,6 +1142,18 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
     image_id = None
     with TestClient(app) as client:
         client.headers['x-bulter-token'] = app.state.csrf
+        if variant.startswith('template'):
+            upload = client.post('/api/attachments?filename=synthetic.pptx', content=office('pptx', 'Old sample'))
+            assert upload.status_code == 200
+            template_id = upload.json()['id']
+            template = app.state.store.get('attachment', template_id)
+            mission.update(template_id=template_id, attachments=[{'id': template_id, 'kind': 'document'}],
+                source_revisions={'attachment': {template_id: revision_hash(template)}})
+            if variant == 'template_changed':
+                template['filename'] = 'changed.pptx'
+                app.state.store.put('attachment', template)
+            if variant == 'template_missing':
+                mission['template_id'] = 'missing'
         if variant.startswith('image'):
             buf = io.BytesIO()
             Image.new('RGB', (100, 50), 'blue').save(buf, format='PNG')
@@ -1175,7 +1187,7 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
         app.state.store.put('mission', mission)
         before = copy.deepcopy(mission)
         response = client.get('/api/missions/sections/outline/pptx')
-        if variant not in {'valid', 'image_valid'}:
+        if variant not in {'valid', 'image_valid', 'template_valid'}:
             assert response.status_code == 409
         else:
             assert response.status_code == 200
@@ -1184,9 +1196,13 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             assert response.headers['cache-control'] == 'no-store'
             deck = Presentation(io.BytesIO(response.content))
             assert len(deck.slides) == 2
+            if variant == 'template_valid':
+                source = Presentation(io.BytesIO(office('pptx', 'Old sample')))
+                assert deck.slide_width == source.slide_width and deck.slide_height == source.slide_height
             text = office_paragraphs(response.content, 'draft.pptx', include_notes=True)
             assert 'Section 1' in text and 'Section 2' in text and 'Consent' in text and 'Issue' in text
             assert any('Notes 2' in part for part in text)
+            assert 'Old sample' not in text
             for index, slide in enumerate(deck.slides):
                 notes = slide.notes_slide.notes_text_frame.text
                 provenance_text = notes.split('Section assembly provenance (application-generated):\n', 1)[1].split('\nSpeaking time:', 1)[0]

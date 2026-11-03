@@ -1186,7 +1186,8 @@ def test_combined_section_timing_recomputes_complete_owned_drafts(variant: str) 
 
 @pytest.mark.parametrize('recovery', [False, True])
 @pytest.mark.parametrize('exact', [False, True])
-def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool, exact: bool) -> None:
+@pytest.mark.parametrize('template', [False, True])
+def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool, exact: bool, template: bool) -> None:
     """Individual passes cannot hide aggregate overrun; explicit revision can fix it."""
     import json
     from src.app import draft_hash
@@ -1222,7 +1223,13 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
     with TestClient(app) as client, patch('src.app.generate', stream):
         client.headers['x-bulter-token'] = app.state.csrf
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
-        response = client.post('/api/missions', json={'prompt': 'Draft wallet sections',
+        template_options = {}
+        if template:
+            from src.tests.test_attachments import office
+            upload = client.post('/api/attachments?filename=design.pptx', content=office('pptx', 'Synthetic template'))
+            assert upload.status_code == 200
+            template_options = {'attachment_ids': [upload.json()['id']], 'template_id': upload.json()['id']}
+        response = client.post('/api/missions', json={**template_options, 'prompt': 'Draft wallet sections',
             'bulter_ids': [bot['id'] for bot in bots], 'sections': ['Issue', 'Present'],
             'review_criteria': ['Include consent'], 'duration_budget_seconds': 100,
             **({'expected_slide_count': 2, 'exact_duration_seconds': 100} if exact else {})})
@@ -1253,6 +1260,8 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         assert len(payload['manifest']['slides']) == 2 and payload['artifact_review_status'] == 'not_assessed'
         assert [slide['slide_id'] for slide in payload['manifest']['slides']] == ['section-1-slide-1', 'section-2-slide-1']
         assert client.get(f"/api/missions/{child['id']}/outline").content == assembled.content
+        if template:
+            assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
         assert client.get(f"/api/missions/{original['id']}/outline").status_code == 409
         assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
         assert app.state.store.get('mission', original['id']) == original
@@ -1346,3 +1355,20 @@ def test_combined_outline_preserves_provenance_and_rechecks_gates(variant: str) 
         assert result['sections'][0]['draft_hash'] == draft_hash(mission['steps'][0]['output'])
         assert result['acceptance_status'] == result['artifact_review_status'] == 'not_assessed'
     assert mission == before
+
+
+def test_section_template_rejects_word_before_model_calls(tmp_path: Path) -> None:
+    """A section inspection template must be a compatible PPTX, never a DOCX."""
+    from src.tests.test_attachments import office
+    app = create_app(tmp_path / 'section-template.sqlite3')
+    with TestClient(app) as client, patch('src.app.generate') as generate:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        uploaded = client.post('/api/attachments?filename=design.docx', content=office('docx', 'Template'))
+        identifier = uploaded.json()['id']
+        response = client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [bot['id'] for bot in bots],
+            'sections': ['Issue', 'Present'], 'review_criteria': ['Consent'], 'duration_budget_seconds': 120,
+            'attachment_ids': [identifier], 'template_id': identifier})
+        assert response.status_code == 400 and 'PPTX' in response.json()['detail']
+        generate.assert_not_called()
+        assert app.state.store.all('mission') == []

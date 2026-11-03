@@ -112,10 +112,12 @@ class MissionInput(StrictInput):
         """Partial handoffs are an explicit multi-agent reference workflow only."""
         if self.review_partial_output and (len(self.bulter_ids) < 2 or self.attachment_mode != "reference"):
             raise ValueError("Partial-output review requires at least two Bulters in reference mode.")
-        if self.sections and (self.attachment_mode != "reference" or self.template_id):
-            raise ValueError("Section missions use reference mode without an export template.")
+        if self.sections and self.attachment_mode != "reference":
+            raise ValueError("Section missions require reference mode.")
+        if self.sections and self.template_id and self.duration_budget_seconds is None:
+            raise ValueError("Section template inspection requires timed structured outlines.")
         if self.review_criteria and (len(self.bulter_ids) != 2 or self.attachment_mode == "placeholders"
-                                     or (self.attachment_mode == "reference" and self.template_id and not self.compose_presentation)):
+                                     or (self.attachment_mode == "reference" and self.template_id and not self.compose_presentation and not self.sections)):
             raise ValueError("Structured review requires two Bulters in reference mode or an Office edit workflow.")
         if self.duration_budget_seconds is not None and self.attachment_mode != "reference":
             raise ValueError("Timed outlines currently require reference mode.")
@@ -841,6 +843,16 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     raise ValueError("Selected picture is missing or changed.")
                 image_assets[image_id] = {"bytes": base64.b64decode(attachment["image"], validate=True),
                                           "filename": attachment["filename"]}
+            template_bytes = None
+            if mission.get("template_id"):
+                template_id = mission["template_id"]
+                template = store.get("attachment", template_id)
+                expected = mission.get("source_revisions", {}).get("attachment", {}).get(template_id)
+                if (template_id not in {item["id"] for item in mission.get("attachments", [])}
+                        or not template or not expected or revision_hash(template) != expected
+                        or Path(template["filename"]).suffix.lower() != ".pptx"):
+                    raise ValueError("Selected PPTX template is missing or changed.")
+                template_bytes = base64.b64decode(template["raw"], validate=True)
             # Carry provenance into the downloaded file, not only its companion JSON.
             slide_origins = {mapping["assembled_slide_id"]: {"section_id": section["section_id"],
                 "source_slide_id": mapping["source_slide_id"], "draft_sha256": section["draft_hash"],
@@ -851,9 +863,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                               **slide_origins[slide["slide_id"]], "artifact_review": "not_assessed",
                               "user_acceptance": "not_assessed"}
                 slide["speaker_notes"] += "\nSection assembly provenance (application-generated):\n" + json.dumps(provenance, sort_keys=True)
-            data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], None, image_assets)
+            data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], template_bytes, image_assets)
         except (ValueError, KeyError, TypeError) as exc:
-            raise HTTPException(409, "Section PowerPoint inspection is unavailable: check complete reviews, timing, source references, selected pictures and layout limits. No content was omitted.") from exc
+            raise HTTPException(409, "Section PowerPoint inspection is unavailable: check complete reviews, timing, source references, selected pictures/template and layout limits. No content was omitted.") from exc
         # Outline peer reviews do not cover these new bytes or their rendered appearance.
         return Response(data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={
             "Content-Disposition": 'attachment; filename="bulter-section-inspection-only.pptx"',
@@ -1290,7 +1302,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             if not template or Path(template["filename"]).suffix.lower() not in {".docx", ".pptx"}:
                 raise HTTPException(400, "Choose an attached DOCX or PPTX template.")
             try:
-                if data.compose_presentation:
+                if data.compose_presentation or data.sections:
                     if Path(template["filename"]).suffix.lower() != ".pptx":
                         raise ValueError("Slide composition requires a PPTX design template.")
                     preview = {"slides": [{"title": "Preview", "body": "Preview", "speaker_notes": "", "duration_seconds": 1}], "discussion_seconds": 0}
