@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -47,8 +48,13 @@ def text_presence(expected: list[str], rendered: str) -> dict:
         return ''.join(unicodedata.normalize('NFKC', value).split())
     actual = normalize(rendered)
     missing = [fragment for fragment in expected if normalize(fragment) not in actual]
+    # These markers can also be literal text; flag a possible extraction problem, not a diagnosis.
+    cid_markers = len(re.findall(r'\(cid:\d+\)', rendered))
+    replacements = rendered.count('\ufffd')
     return {'state': 'needs_review' if missing else ('present' if expected else 'not_assessed'),
-            'expected_fragments': len(expected), 'missing_fragments': missing}
+            'expected_fragments': len(expected), 'missing_fragments': missing,
+            'extraction_warnings': ['possible_unmapped_glyphs'] if cid_markers or replacements else [],
+            'cid_marker_count': cid_markers, 'replacement_character_count': replacements}
 
 
 def render_presentation(source: Path, expected_sha256: str, output: Path) -> dict:
@@ -127,6 +133,8 @@ def main() -> int:
     LOGGER.info('Rendered %s slides. Visual inspection and acceptance remain pending.', report['slide_count'])
     if report['text_presence'] == 'needs_review':
         LOGGER.warning('Some slide text was not found in PDF extraction; inspect the private report.')
+        if any(page['text_presence'].get('extraction_warnings') for page in report['pages']):
+            LOGGER.warning('PDF extraction contains possible unmapped glyphs; compare the rendered pages before diagnosing missing content.')
         return 2
     return 0
 

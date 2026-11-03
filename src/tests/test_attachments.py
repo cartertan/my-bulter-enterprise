@@ -1111,3 +1111,18 @@ def test_duplicate_slide_ids_block_artifact_creation_and_peer_call(tmp_path: Pat
         assert mission['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{mission['id']}/artifact/draft").status_code == 409
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('rendered,cids,replacements', [('Consent (cid:123)(cid:456)', 2, 0),
+    ('Consent \ufffd', 0, 1), ('Consent before issuance', 0, 0)])
+def test_render_extraction_markers_are_diagnostic_not_acceptance(rendered: str, cids: int, replacements: int) -> None:
+    """Extraction anomalies stay distinct from clipping or acceptance verdicts."""
+    from scripts.render_presentation import text_presence
+    result = text_presence(['Consent before issuance'], rendered)
+    assert result['cid_marker_count'] == cids
+    assert result['replacement_character_count'] == replacements
+    assert result['extraction_warnings'] == (['possible_unmapped_glyphs'] if cids or replacements else [])
+    assert result['state'] == ('needs_review' if cids or replacements else 'present')
+    assert 'user_acceptance' not in result
+    # A literal marker matching the source must not be promoted into a missing-text claim.
+    assert text_presence([rendered], rendered)['state'] == 'present'
