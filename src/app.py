@@ -395,6 +395,8 @@ def source_register(attachments: list[dict], evidence: list[dict]) -> list[dict]
                     "truncated": bool(item.get("truncated", False))})
                 if item.get("source_url"):
                     records[-1].update(source_url=item["source_url"], provenance=item.get("provenance", "unverified"))
+                if item.get("retrieved_at"):
+                    records[-1]["retrieved_at"] = item["retrieved_at"]
     return records
 
 

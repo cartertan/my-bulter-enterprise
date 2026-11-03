@@ -29,7 +29,7 @@ FILES = (
     "src/attachments.py", "src/attachment_routes.py", "src/static/attachments.js",
     "src/tests/test_attachments.py", "src/docs/MISSION_ATTACHMENTS.md", "src/docs/screenshots/mission-attachments.jpg",
     "src/docs/UPLOAD_2026-10-27.md", "src/docs/screenshots/connectors-connected.jpg",
-    "src/connectors.py", "src/connector_routes.py", "src/static/connectors.js",
+    "src/connectors.py", "src/web_evidence.py", "src/tests/test_web_evidence.py", "src/connector_routes.py", "src/static/connectors.js",
     "src/tests/test_connectors.py", "src/docs/CONNECTORS.md", "scripts/run_browser_mcp.sh",
     ".gitignore", "src/local_visuals.py", "src/image_engine.py", "src/mflux_worker.py", "scripts/setup_images.py", "src/image-requirements.txt", "src/tests/test_local_visuals.py", "src/docs/LOCAL_VISUALS.md", "src/docs/screenshots/model-concierge.jpg", "src/docs/screenshots/image-engine-ready.jpg", "src/docs/screenshots/flux-example.jpg", "src/docs/screenshots/photo-example.jpg", "README.md", "scripts/run.sh", "scripts/package_release.py",
     "src/.gitignore", "src/__init__.py", "src/app.py", "src/providers.py", "src/storage.py",

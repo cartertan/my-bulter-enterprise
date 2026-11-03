@@ -91,6 +91,24 @@ def install_connector_routes(app: FastAPI, connectors: Connectors) -> None:
         async with connectors.lock:
             return await connectors.browser_snapshot()
 
+    @app.post("/api/connectors/web/read")
+    async def read_public_page(request: Request) -> dict:
+        """Fetch only a URL the user explicitly submits, without model tool access."""
+        from src.web_evidence import fetch_public_page
+        from src.connectors import timestamp
+        data = await body(request, {"url"})
+        url = text_field(data, "url", 2048)
+        async with connectors.lock:
+            try:
+                page = await asyncio.to_thread(fetch_public_page, url)
+            except ValueError as exc:
+                raise ConnectorError(str(exc)) from None
+            record = connectors.evidence("web", "Retrieved public page", page["text"])
+            record.update(source_url=page["source_url"], retrieved_at=timestamp(),
+                          provenance="public_https_fetch; static_text_only", scope=page["scope"],
+                          retrieved_bytes=page["retrieved_bytes"])
+            return connectors.store.put("connector_evidence", record)
+
     @app.post("/api/connectors/manual")
     async def manual(request: Request) -> dict:
         """Record only the excerpt the user explicitly pasted for analysis."""

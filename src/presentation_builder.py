@@ -176,6 +176,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
             metadata_notes.append(f"{source_names[identifier]} | Source ID: {identifier}"
                 + f"\nSource URL: {source.get('source_url') or 'not supplied'}"
                 + f"\nRecorded at (not retrieval/publication date): {source.get('recorded_at') or 'not recorded'}"
+                + f"\nRetrieved at: {source.get('retrieved_at') or 'not verified'}"
                 + f"\nProvenance: {source.get('provenance') or 'unverified'}")
         # Put full metadata in notes, avoiding URL overflow in the visible citation panel.
         provenance += '\nSource metadata:\n' + '\n'.join(metadata_notes)

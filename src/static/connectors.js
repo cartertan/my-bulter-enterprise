@@ -1,6 +1,12 @@
 /* Explicit connector controls. Inputs: user forms and local API. Outputs: safe DOM.
    No automatic external writes, HTML rendering or model-directed actions. Author: Carter Tan. */
 'use strict';
+
+function sourceEvidenceLabel(item) {
+  return item.provenance === 'public_https_fetch; static_text_only' && item.retrieved_at
+    ? `retrieved ${item.retrieved_at}; static text only`
+    : 'user-provided; page not fetched';
+}
 let connectorData = {connections: {}, evidence: [], actions: []};
 let connectorSelection = [];
 const contextNotice = el('p', 'help', 'No connector reference selected.');
@@ -54,7 +60,7 @@ async function refreshConnectors() {
   for (const item of connectorData.evidence) {
     const card = el('article', 'panel');
     card.append(el('h3', '', item.title), el('p', 'help', `${item.source} · ${item.created} · local-only${item.truncated ? ' · truncated' : ''}`));
-    if (item.source_url) card.append(el('p', 'help', `Source: ${item.source_url} · user-provided; page not fetched`));
+    if (item.source_url) card.append(el('p', 'help', `Source: ${item.source_url} · ${sourceEvidenceLabel(item)}`));
     const details = document.createElement('details');
     details.append(el('summary', '', 'Review captured text'), el('pre', 'connector-text', item.content));
     card.append(details, button('Use in a local mission', 'secondary', () => {
@@ -119,6 +125,7 @@ bindConnectorButton('#refresh-connectors', refreshConnectors);
 bindConnectorButton('#read-gmail', () => connectorOperation('google/read', {kind: 'gmail', query: $('#gmail-query').value}));
 bindConnectorButton('#read-calendar', () => connectorOperation('google/read', {kind: 'calendar'}));
 bindConnectorButton('#read-telegram', () => connectorOperation('telegram/inbox'));
+bindConnectorButton('#read-public-source', () => connectorOperation('web/read', {url: $('#public-source-url').value.trim()}));
 bindConnectorButton('#capture-browser', () => connectorOperation('browser/capture'));
 bindConnectorButton('#pair-telegram', async () => {
   const result = await connectorOperation('telegram/pair');
