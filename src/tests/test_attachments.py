@@ -1126,3 +1126,69 @@ def test_render_extraction_markers_are_diagnostic_not_acceptance(rendered: str, 
     assert 'user_acceptance' not in result
     # A literal marker matching the source must not be promoted into a missing-text claim.
     assert text_presence([rendered], rendered)['state'] == 'present'
+
+
+@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed'])
+def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> None:
+    """Compose ordered section drafts without promoting their reviews to new bytes."""
+    import copy
+    import hashlib
+    from src.app import draft_hash, revision_hash
+    from src.tests.test_mission_reliability import timed_outline
+    app = create_app(tmp_path / 'section-inspection.sqlite3')
+    mission = {'id': 'sections', 'status': 'completed', 'sections': ['Issue', 'Present'],
+        'team': [{'id': 'a'}, {'id': 'b'}], 'duration_budget_seconds': 120,
+        'review_criteria': ['Consent'], 'steps': [], 'acceptance_status': 'not_assessed'}
+    image_id = None
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        if variant.startswith('image'):
+            buf = io.BytesIO()
+            Image.new('RGB', (100, 50), 'blue').save(buf, format='PNG')
+            upload = client.post('/api/attachments?filename=synthetic.png', content=buf.getvalue())
+            assert upload.status_code == 200
+            image_id = upload.json()['id']
+            attachment = app.state.store.get('attachment', image_id)
+            mission['attachments'] = [{'id': image_id, 'kind': 'image'}] if variant != 'image_missing' else []
+            mission['source_revisions'] = {'attachment': {image_id: revision_hash(attachment)}}
+            if variant == 'image_changed':
+                attachment['filename'] = 'changed.png'
+                app.state.store.put('attachment', attachment)
+        for i in range(2):
+            outline = timed_outline(60, 0)
+            outline['slides'][0].update(title=f'Section {i + 1}', speaker_notes=f'Notes {i + 1}')
+            if i == 0:
+                outline['slides'][0]['flow_steps'] = ['Consent', 'Issue']
+            if i == 1 and image_id:
+                outline['slides'][0].update(image_id=image_id, image_caption='Synthetic blue panel')
+            if variant == 'overflow' and i == 1:
+                outline['slides'][0]['body'] = 'Explicit consent ' + 'x' * 701
+            output = json.dumps(outline)
+            author = {'bulter_id': 'a', 'section_id': f'section-{i + 1}', 'draft_revision': 1,
+                      'status': 'completed', 'output': output}
+            reviewer = {'bulter_id': 'b', 'section_id': author['section_id'], 'status': 'completed',
+                'output': json.dumps({'draft_hash': draft_hash(output), 'criteria': [
+                    {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic', 'evidence_quotes': ['Explicit consent']}]})}
+            mission['steps'].extend([author, reviewer])
+        if variant == 'stale_review':
+            mission['steps'][0]['output'] += ' '
+        app.state.store.put('mission', mission)
+        before = copy.deepcopy(mission)
+        response = client.get('/api/missions/sections/outline/pptx')
+        if variant not in {'valid', 'image_valid'}:
+            assert response.status_code == 409
+        else:
+            assert response.status_code == 200
+            assert response.headers['x-artifact-sha256'] == hashlib.sha256(response.content).hexdigest()
+            assert 'artifact-review-not-assessed' in response.headers['x-artifact-purpose']
+            assert response.headers['cache-control'] == 'no-store'
+            deck = Presentation(io.BytesIO(response.content))
+            assert len(deck.slides) == 2
+            text = office_paragraphs(response.content, 'draft.pptx', include_notes=True)
+            assert 'Section 1' in text and 'Section 2' in text and 'Consent' in text and 'Issue' in text
+            assert any('Notes 2' in part for part in text)
+            if image_id:
+                assert any(shape.shape_type == 13 for shape in deck.slides[1].shapes)
+        assert app.state.store.get('mission', mission['id']) == before
+        assert app.state.store.all('artifact') == []
+        assert client.get('/api/missions/sections/export/pptx').status_code == 400

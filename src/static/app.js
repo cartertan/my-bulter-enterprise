@@ -277,6 +277,18 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
+  if (state.capabilities?.section_presentation_inspection && mission.sections?.length
+      && mission.status === 'completed' && mission.section_timing_check?.state === 'pass') {
+    head.append(button('Inspect section PowerPoint (not reviewed)', 'secondary', async () => {
+      try {
+        const response = await fetch(`/api/missions/${mission.id}/outline/pptx`, {headers: {'X-Bulter-Token': token}});
+        if (!response.ok) throw new Error((await response.json()).detail);
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement('a'); a.href = url; a.download = 'bulter-section-inspection-only.pptx'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { notify(error.message); }
+    }));
+  }
   if (state.capabilities?.artifact_draft_inspection && mission.artifact_id
       && ['completed', 'completed_with_issues', 'failed', 'cancelled', 'interrupted'].includes(mission.status)
       && mission.steps[0]?.status === 'completed') {
@@ -330,7 +342,7 @@ function renderDetail() {
   }
   if (mission.section_timing_check) {
     const timing = mission.section_timing_check;
-    panel.append(el('p', 'help', `Combined section timing: ${timing.state} · ${timing.total_seconds ?? 'unverified'}/${timing.budget_seconds} seconds including all section discussion. Declared timings only; no assembled deck or acceptance is established.`));
+    panel.append(el('p', 'help', `Combined section timing: ${timing.state} · ${timing.total_seconds ?? 'unverified'}/${timing.budget_seconds} seconds including all section discussion. Declared timings only; no reviewed deck or acceptance is established.`));
     if (timing.expected_slide_count != null || timing.exact_duration_seconds != null) panel.append(el('p', 'help', `Combined exact targets: ${timing.slide_count ?? 'unverified'}/${timing.expected_slide_count ?? 'unspecified'} slides · ${timing.total_seconds ?? 'unverified'}/${timing.exact_duration_seconds ?? 'unspecified'} seconds.`));
     if (timing.error) panel.append(el('p', 'error', timing.error));
   }

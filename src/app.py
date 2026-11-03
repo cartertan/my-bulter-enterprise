@@ -822,6 +822,34 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             "Cache-Control": "no-store", "X-Outline-SHA256": hashlib.sha256(data).hexdigest(),
             "X-Artifact-Purpose": "outline-only; acceptance-not-assessed"})
 
+    @app.get("/api/missions/{identifier}/outline/pptx")
+    async def inspect_section_presentation(identifier: str) -> Response:
+        """Compose an inspection-only section deck; never promote outline reviews."""
+        mission = store.get("mission", identifier)
+        if not mission:
+            raise HTTPException(404, "Mission not found.")
+        try:
+            outline = assemble_section_outline(mission)
+            image_assets = {}
+            selected_images = {item["id"] for item in mission.get("attachments", []) if item.get("kind") == "image"}
+            for image_id in {slide["image_id"] for slide in outline["manifest"]["slides"] if slide.get("image_id")}:
+                if image_id not in selected_images:
+                    raise ValueError("Picture was not selected for this mission.")
+                attachment = store.get("attachment", image_id)
+                expected = mission.get("source_revisions", {}).get("attachment", {}).get(image_id)
+                if not attachment or not expected or revision_hash(attachment) != expected:
+                    raise ValueError("Selected picture is missing or changed.")
+                image_assets[image_id] = {"bytes": base64.b64decode(attachment["image"], validate=True),
+                                          "filename": attachment["filename"]}
+            data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], None, image_assets)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(409, "Section PowerPoint inspection is unavailable: check complete reviews, timing, source references, selected pictures and layout limits. No content was omitted.") from exc
+        # Outline peer reviews do not cover these new bytes or their rendered appearance.
+        return Response(data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={
+            "Content-Disposition": 'attachment; filename="bulter-section-inspection-only.pptx"',
+            "Cache-Control": "no-store", "X-Artifact-SHA256": hashlib.sha256(data).hexdigest(),
+            "X-Artifact-Purpose": "inspection-only; artifact-review-not-assessed; acceptance-not-assessed"})
+
     @app.get("/api/missions/{identifier}/artifact/draft")
     async def inspect_artifact_draft(identifier: str) -> Response:
         """Download a complete author artifact for inspection, without granting acceptance."""
@@ -893,7 +921,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "section_timing_validation": True, "combined_section_outline": True, "exact_presentation_constraints": True, "draft_revision": True, "section_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "section_timing_validation": True, "combined_section_outline": True, "section_presentation_inspection": True, "exact_presentation_constraints": True, "draft_revision": True, "section_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}
