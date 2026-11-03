@@ -265,6 +265,18 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
+  if (state.capabilities?.combined_section_outline && mission.sections?.length
+      && mission.status === 'completed' && mission.section_timing_check?.state === 'pass') {
+    head.append(button('Download combined outline (JSON)', 'secondary', async () => {
+      try {
+        const response = await fetch(`/api/missions/${mission.id}/outline`, {headers: {'X-Bulter-Token': token}});
+        if (!response.ok) throw new Error((await response.json()).detail);
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement('a'); a.href = url; a.download = 'bulter-combined-outline.json'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { notify(error.message); }
+    }));
+  }
   if (state.capabilities?.artifact_draft_inspection && mission.artifact_id
       && ['completed', 'completed_with_issues', 'failed', 'cancelled', 'interrupted'].includes(mission.status)
       && mission.steps[0]?.status === 'completed') {

@@ -494,6 +494,51 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
     return record
 
 
+def assemble_section_outline(mission: dict) -> dict:
+    """Combine reviewed timed sections without claiming review of a rendered artifact.
+
+    Retain the original drafts and map generated unique IDs back to each source
+    slide. Enforce the whole-outline size bound before returning any content.
+    """
+    if (mission.get("status") != "completed" or not mission.get("sections")
+            or mission.get("duration_budget_seconds") is None or len(mission.get("team", [])) != 2
+            or not mission.get("review_criteria") or len(mission.get("steps", [])) != 2 * len(mission["sections"])):
+        raise ValueError("A complete timed section mission with structured reviews is required.")
+    timing = validate_section_timing(mission)
+    if timing["state"] != "pass":
+        raise ValueError("Combined section timing must pass before outline assembly.")
+    slides, provenance = [], []
+    for index, scope in enumerate(mission["sections"]):
+        author, reviewer = mission["steps"][index * 2:index * 2 + 2]
+        section_id = f"section-{index + 1}"
+        if any(step.get("status") != "completed" or step.get("section_id") != section_id
+               or step.get("bulter_id") != mission["team"][role]["id"]
+               for role, step in enumerate((author, reviewer))):
+            raise ValueError("Section review identity or completion is inconsistent.")
+        review = validate_draft_review(reviewer["output"], author, mission["review_criteria"], reviewer["bulter_id"])
+        if review["state"] != "criteria_pass":
+            raise ValueError("Every section needs a passing review bound to its current draft.")
+        if mission.get("require_source_citations") and validate_sources(
+                author["output"], mission.get("attachments", []), mission.get("connector_evidence", []), True)["state"] != "references_valid":
+            raise ValueError("Section source references must pass before outline assembly.")
+        outline = parse_presentation_outline(author["output"])
+        mapping = []
+        for slide_index, slide in enumerate(outline.slides):
+            assembled_id = f"section-{index + 1}-slide-{slide_index + 1}"
+            mapping.append({"source_slide_id": slide.slide_id, "assembled_slide_id": assembled_id})
+            slides.append({**slide.model_dump(), "slide_id": assembled_id})
+        provenance.append({"section_id": section_id, "scope": scope, "draft_hash": draft_hash(author["output"]),
+                           "reviewer_id": reviewer["bulter_id"], "slides": mapping})
+    # Same manifest bounds as whole-outline composition; never truncate large assemblies.
+    if len(slides) > 60:
+        raise ValueError("The combined outline exceeds 60 slides. Reduce the section scopes.")
+    manifest = TimedPresentation(slides=slides, discussion_seconds=timing["discussion_seconds"]).model_dump()
+    return {"schema_version": 1, "mission_id": mission["id"], "purpose": "combined-outline-only",
+            "acceptance_status": "not_assessed", "artifact_review_status": "not_assessed",
+            "manifest": manifest, "sections": provenance, "timing": timing,
+            "sources": mission.get("source_register", [])}
+
+
 def eligible_memory(memories: list[dict], bot: dict, cloud_mission: bool) -> list[dict]:
     """Enforce both bot scope and whole-mission egress policy before prompting."""
     return [m for m in memories if m["active"]
@@ -761,6 +806,22 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         store.put("document", document)
         return document
 
+    @app.get("/api/missions/{identifier}/outline")
+    async def inspect_combined_outline(identifier: str) -> Response:
+        """Download a deterministic combined outline, preserving source checkpoints."""
+        mission = store.get("mission", identifier)
+        if not mission:
+            raise HTTPException(404, "Mission not found.")
+        try:
+            outline = assemble_section_outline(mission)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(409, "The section outline cannot be assembled: incomplete, changed or invalid drafts/reviews, timing, sources or size limits.") from exc
+        data = json.dumps(outline, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return Response(data, media_type="application/json", headers={
+            "Content-Disposition": 'attachment; filename="bulter-combined-outline.json"',
+            "Cache-Control": "no-store", "X-Outline-SHA256": hashlib.sha256(data).hexdigest(),
+            "X-Artifact-Purpose": "outline-only; acceptance-not-assessed"})
+
     @app.get("/api/missions/{identifier}/artifact/draft")
     async def inspect_artifact_draft(identifier: str) -> Response:
         """Download a complete author artifact for inspection, without granting acceptance."""
@@ -832,7 +893,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         missions = store.all("mission")
         bulters = store.all("bulter")
         return {"bulters": [b for b in bulters if not b.get("removed_at")],
-                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "section_timing_validation": True, "exact_presentation_constraints": True, "draft_revision": True, "section_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
+                "capabilities": {"partial_output_review": True, "checkpoint_resume": True, "required_memory": True, "section_checkpoints": True, "structured_review": True, "timing_validation": True, "section_timing_validation": True, "combined_section_outline": True, "exact_presentation_constraints": True, "draft_revision": True, "section_revision": True, "office_peer_review": True, "source_citations": True, "presentation_composition": True, "picture_composition": True, "artifact_draft_inspection": True},
                 "removed_bulters": [b for b in bulters if b.get("removed_at")],
                 "memories": store.all("memory"), "missions": missions[::-1],
                 "obsidian": {"path": str(vault), "exists": vault.is_dir()}}

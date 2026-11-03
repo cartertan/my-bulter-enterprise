@@ -1245,6 +1245,15 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         assert child['status'] == 'completed' and child['section_timing_check']['total_seconds'] == 100
         assert child['section_timing_check']['state'] == 'pass'
         assert child['acceptance_status'] == 'not_assessed'
+        assembled = client.get(f"/api/missions/{child['id']}/outline")
+        assert assembled.status_code == 200 and assembled.headers['cache-control'] == 'no-store'
+        import hashlib
+        assert assembled.headers['x-outline-sha256'] == hashlib.sha256(assembled.content).hexdigest()
+        payload = assembled.json()
+        assert len(payload['manifest']['slides']) == 2 and payload['artifact_review_status'] == 'not_assessed'
+        assert [slide['slide_id'] for slide in payload['manifest']['slides']] == ['section-1-slide-1', 'section-2-slide-1']
+        assert client.get(f"/api/missions/{child['id']}/outline").content == assembled.content
+        assert client.get(f"/api/missions/{original['id']}/outline").status_code == 409
         assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
         assert app.state.store.get('mission', original['id']) == original
 
@@ -1289,3 +1298,51 @@ def test_impossible_section_targets_rejected_before_inference(targets: dict, mes
     with pytest.raises(ValidationError, match=message):
         MissionInput(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
                      review_criteria=['Consent'], duration_budget_seconds=100, **targets)
+
+
+@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'wrong_reviewer', 'scope_swap', 'partial', 'timing', 'too_many', 'sources', 'valid_sources'])
+def test_combined_outline_preserves_provenance_and_rechecks_gates(variant: str) -> None:
+    """Assembly cannot trust cached passes or lose content behind duplicate local IDs."""
+    import copy
+    import json
+    from src.app import assemble_section_outline, draft_hash
+    mission = {'id': 'test', 'status': 'completed', 'sections': ['Issue', 'Present'],
+        'team': [{'id': 'a'}, {'id': 'b'}], 'duration_budget_seconds': 1000,
+        'review_criteria': ['Consent'], 'steps': [], 'section_timing_check': {'state': 'pass'}}
+    for index in range(2):
+        outline = timed_outline(30, 10)
+        outline['slides'][0]['speaker_notes'] = f'Notes for section {index + 1}'
+        if variant == 'too_many':
+            outline['slides'] = [{**outline['slides'][0], 'slide_id': str(i), 'duration_seconds': 1} for i in range(31)]
+        if variant in {'sources', 'valid_sources'}:
+            mission.update(require_source_citations=True, connector_evidence=[{'id': 'src', 'content': 'Explicit consent'}])
+            outline['slides'][0]['claims'] = [{'text': 'Consent', 'evidence': [{'source_id': 'src', 'quote': 'Explicit consent' if variant == 'valid_sources' else 'Invented'}]}]
+        output = json.dumps(outline)
+        author = {'bulter_id': 'a', 'section_id': f'section-{index + 1}', 'draft_revision': 1,
+                  'status': 'completed', 'output': output}
+        reviewer = {'bulter_id': 'b', 'section_id': author['section_id'], 'status': 'completed',
+            'review_state': 'criteria_pass', 'output': json.dumps({'draft_hash': draft_hash(output), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic', 'evidence_quotes': ['Explicit consent']}]})}
+        mission['steps'].extend([author, reviewer])
+    if variant == 'stale_review':
+        mission['steps'][0]['output'] += ' '
+    elif variant == 'wrong_reviewer':
+        mission['steps'][1]['bulter_id'] = 'a'
+    elif variant == 'scope_swap':
+        mission['steps'][1]['section_id'] = 'section-2'
+    elif variant == 'partial':
+        mission['steps'][0]['status'] = 'partial'
+    elif variant == 'timing':
+        mission['duration_budget_seconds'] = 60
+    before = copy.deepcopy(mission)
+    if variant not in {'valid', 'valid_sources'}:
+        with pytest.raises(ValueError):
+            assemble_section_outline(mission)
+    else:
+        result = assemble_section_outline(mission)
+        assert result['manifest']['discussion_seconds'] == 20
+        assert result['manifest']['slides'][1]['speaker_notes'] == 'Notes for section 2'
+        assert result['sections'][1]['slides'] == [{'source_slide_id': 'slide-1', 'assembled_slide_id': 'section-2-slide-1'}]
+        assert result['sections'][0]['draft_hash'] == draft_hash(mission['steps'][0]['output'])
+        assert result['acceptance_status'] == result['artifact_review_status'] == 'not_assessed'
+    assert mission == before
