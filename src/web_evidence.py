@@ -1,7 +1,7 @@
 """Retrieve one explicitly selected public HTTPS page as bounded reference text.
 
 Inputs: Public HTTPS URL without credentials, query or fragment. Outputs: Text
-and source scope; never executes scripts, follows redirects, or sends cookies.
+and source scope; never executes scripts, follows cross-origin redirects, or sends cookies.
 Assumptions: System TLS trust and DNS. Addresses are checked then pinned for the
 connection to prevent DNS rebinding. No new dependencies. Author: Carter Tan.
 """
@@ -12,7 +12,7 @@ import ssl
 import time
 import threading
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from src.attachments import citation_target_allowed
 
@@ -57,7 +57,7 @@ class PublicHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def fetch_public_page(url: str) -> dict:
+def _fetch_public_page_once(url: str) -> dict:
     """Fetch one bounded static page; all failures have fixed, safe messages."""
     connection = None
     response = None
@@ -94,8 +94,13 @@ def fetch_public_page(url: str) -> dict:
         deadline_timer.daemon = True
         deadline_timer.start()
         response = connection.getresponse()
+        if response.status in {301, 302, 303, 307, 308}:
+            location = response.getheader('Location')
+            if not location or len(location) > 2048 or any(ord(c) < 33 for c in location):
+                raise ValueError('The source returned an invalid redirect.')
+            return {'redirect_url': urljoin(url, location)}
         if response.status != 200:
-            raise ValueError('The page did not return HTTP 200. Redirects and sign-in pages are not followed.')
+            raise ValueError('The page did not return HTTP 200. Sign-in and error responses are not retrieved.')
         if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
             raise ValueError('Compressed page responses are not supported.')
         content_type = response.getheader('Content-Type', '').split(';', 1)[0].strip().lower()
@@ -134,3 +139,37 @@ def fetch_public_page(url: str) -> dict:
             response.close()
         if connection:
             connection.close()
+
+
+def fetch_public_page(url: str) -> dict:
+    """Follow at most three same-origin HTTPS redirects, rechecking DNS each hop.
+
+    Each request retains the byte and response-time bounds. Cross-origin URLs,
+    loops and unsupported target forms fail before contacting the target.
+    """
+    initial = urlsplit(url)
+    current, visited, redirects = url, set(), []
+    for hop in range(4):
+        if current in visited:
+            raise ValueError('The public source returned a redirect loop.')
+        visited.add(current)
+        page = _fetch_public_page_once(current)
+        if 'redirect_url' not in page:
+            page.update(requested_url=url, redirects=redirects)
+            return page
+        target = page['redirect_url']
+        try:
+            parsed = urlsplit(target)
+            target_port = parsed.port or 443
+        except ValueError:
+            raise ValueError('The source returned an invalid redirect URL.') from None
+        if (parsed.scheme != 'https' or parsed.hostname != initial.hostname
+                or target_port != (initial.port or 443)
+                or not citation_target_allowed(target) or parsed.query or parsed.fragment
+                or len(target) > 2048 or not target.isascii() or any(ord(c) < 33 for c in target)):
+            raise ValueError('Only same-origin public HTTPS redirects without queries or fragments are supported.')
+        if hop == 3:
+            raise ValueError('The public source exceeded three redirects.')
+        redirects.append({'from': current, 'to': target})
+        current = target
+    raise ValueError('The public source could not be retrieved.')

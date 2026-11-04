@@ -61,6 +61,7 @@ async function refreshConnectors() {
     const card = el('article', 'panel');
     card.append(el('h3', '', item.title), el('p', 'help', `${item.source} · ${item.created} · local-only${item.truncated ? ' · truncated' : ''}`));
     if (item.source_url) card.append(el('p', 'help', `Source: ${item.source_url} · ${sourceEvidenceLabel(item)}`));
+    if (item.redirects?.length) card.append(el('p', 'help', `Requested: ${item.requested_url} · ${item.redirects.length} same-origin redirects followed`));
     if (item.scope) card.append(el('p', 'help', `Scope: ${item.scope}`));
     const details = document.createElement('details');
     details.append(el('summary', '', 'Review captured text'), el('pre', 'connector-text', item.content));

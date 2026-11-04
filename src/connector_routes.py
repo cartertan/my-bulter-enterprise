@@ -109,7 +109,8 @@ def install_connector_routes(app: FastAPI, connectors: Connectors) -> None:
             record = connectors.evidence("web", "Retrieved public page excerpt" if excerpt else "Retrieved public page", excerpt or page["text"])
             record.update(source_url=page["source_url"], retrieved_at=timestamp(),
                           provenance="public_https_fetch; static_text_only", scope=page["scope"],
-                          retrieved_bytes=page["retrieved_bytes"])
+                          retrieved_bytes=page["retrieved_bytes"], requested_url=page.get("requested_url", url),
+                          redirects=page.get("redirects", []))
             if excerpt:
                 import hashlib
                 start = page["text"].index(excerpt)

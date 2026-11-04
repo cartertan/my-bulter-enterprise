@@ -175,3 +175,54 @@ def test_exact_web_excerpt_keeps_scope_and_citation_boundary(tmp_path, variant: 
         assert record['scope'] in deck.slides[0].notes_slide.notes_text_frame.text
         outline['slides'][0]['claims'][0]['evidence'][0]['quote'] = 'Other page content.'
         assert validate_sources(json.dumps(outline), [], [record], True)['state'] == 'invalid'
+
+
+@pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
+def test_same_origin_redirect_preserves_final_url_and_revalidates_dns(status: int) -> None:
+    """Redirect targets are fetched through the same public-address/TLS checks."""
+    redirect = response_fixture(status=status)
+    redirect.headers['Location'] = '/public/page'
+    final = response_fixture()
+    addresses = [(2, 1, 6, '', ('93.184.216.34', 443))]
+    with patch('src.web_evidence.socket.getaddrinfo', return_value=addresses) as dns, patch('src.web_evidence.PublicHTTPS') as connection:
+        connection.return_value.getresponse.side_effect = [redirect, final]
+        result = fetch_public_page('https://example.org/start')
+        assert dns.call_count == connection.call_count == 2
+        assert result['source_url'] == 'https://example.org/public/page'
+        assert result['requested_url'] == 'https://example.org/start'
+        assert result['redirects'] == [{'from': 'https://example.org/start', 'to': 'https://example.org/public/page'}]
+        redirect.close.assert_called_once()
+        final.close.assert_called_once()
+
+
+@pytest.mark.parametrize('target', ['http://example.org/page', 'https://other.example/page',
+    'https://example.org/?token=secret', 'https://example.org/#section',
+    'https://user:secret@example.org/', 'https://example.org:8443/', 'https://example.org:invalid/',
+    '/bad\npath'])
+def test_unsupported_redirect_never_contacts_destination(target: str) -> None:
+    """No downgrade, cross-origin request, credential transfer or unsafe target."""
+    redirect = response_fixture(status=302)
+    redirect.headers['Location'] = target
+    with patch('src.web_evidence.socket.getaddrinfo', return_value=[(2, 1, 6, '', ('93.184.216.34', 443))]) as dns, patch('src.web_evidence.PublicHTTPS') as connection:
+        connection.return_value.getresponse.return_value = redirect
+        with pytest.raises(ValueError):
+            fetch_public_page('https://example.org/start')
+        assert dns.call_count == connection.call_count == 1
+
+
+@pytest.mark.parametrize('variant', ['loop', 'limit', 'rebound'])
+def test_redirect_loops_limits_and_dns_rebinding_fail_closed(variant: str) -> None:
+    """A same-host redirect still cannot bypass DNS isolation or the hop bound."""
+    responses = []
+    for index in range(4):
+        item = response_fixture(status=302)
+        item.headers['Location'] = '/start' if variant == 'loop' else f'/hop-{index}'
+        responses.append(item)
+    public = [(2, 1, 6, '', ('93.184.216.34', 443))]
+    private = [(2, 1, 6, '', ('127.0.0.1', 443))]
+    with patch('src.web_evidence.socket.getaddrinfo', side_effect=[public, private] if variant == 'rebound' else [public] * 4) as dns, patch('src.web_evidence.PublicHTTPS') as connection:
+        connection.return_value.getresponse.side_effect = responses
+        with pytest.raises(ValueError):
+            fetch_public_page('https://example.org/start')
+        assert connection.call_count == (4 if variant == 'limit' else 1)
+        assert dns.call_count == (2 if variant == 'rebound' else connection.call_count)
