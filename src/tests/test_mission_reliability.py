@@ -1452,3 +1452,79 @@ def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fau
         assert child['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
         assert app.state.store.get('mission', parent['id']) == parent
+
+
+@pytest.mark.parametrize('variant', ['pass', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit'])
+def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, variant: str) -> None:
+    """Two independent reviews bind to retained bytes without promoting acceptance."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'section-reviews.sqlite3', vault=tmp_path / 'empty')
+    calls = []
+    import asyncio
+    import threading
+    entered = threading.Event()
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        output = json.dumps(timed_outline(60, 0))
+        parent = {'id': 'source', 'status': 'completed', 'prompt': 'Review consent', 'sections': ['Consent'],
+            'team': bots, 'cloud': False, 'duration_budget_seconds': 120, 'attachments': [],
+            'review_criteria': ['Consent'], 'acceptance_status': 'not_assessed', 'source_revisions': {}, 'steps': [
+                {'bulter_id': bots[0]['id'], 'section_id': 'section-1', 'draft_revision': 1, 'status': 'completed', 'output': output},
+                {'bulter_id': bots[1]['id'], 'section_id': 'section-1', 'status': 'completed', 'output': json.dumps({
+                    'draft_hash': draft_hash(output), 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass',
+                    'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})}]}
+        if variant == 'cloud':
+            parent['team'] = [{**b, 'provider': 'openai'} for b in bots]
+        elif variant == 'changed_bot':
+            app.state.store.put('bulter', {**bots[0], 'name': 'Changed'})
+        elif variant == 'changed_source':
+            parent['source_revisions'] = {'connector_evidence': {'missing': 'old'}}
+        elif variant == 'context':
+            parent['prompt'] = 'Long brief ' * 4000
+        elif variant == 'revoked_memory':
+            parent['required_memory_revisions'] = {'missing': 'old'}
+        elif variant == 'attempt_limit':
+            for i in range(3):
+                app.state.store.put('mission', {'id': str(i), 'status': 'completed', 'section_source_mission_id': 'source'})
+        app.state.store.put('mission', parent)
+
+        async def stream(provider, model, system, messages, **kwargs):
+            calls.append(messages[0]['content'])
+            assert provider == 'ollama' and 'api_key' not in kwargs
+            assert 'application-section-assembly' not in messages[0]['content']
+            if variant == 'cancel':
+                entered.set()
+                await asyncio.Event().wait()
+            if variant == 'output_limit':
+                yield 'x' * 17000
+                return
+            if variant == 'provider_failure':
+                raise ProviderError('Synthetic provider failure')
+            digest = kwargs['options']['response_schema']['properties']['draft_hash']['const']
+            yield json.dumps({'draft_hash': '0' * 64 if variant == 'wrong_hash' else digest,
+                'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Independent review',
+                              'evidence_quotes': ['Explicit consent']}]})
+
+        with patch('src.app.generate', stream):
+            response = client.post('/api/missions/source/review-section-artifact')
+            if variant in {'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit'}:
+                assert response.status_code in {400, 409}
+                assert not calls and len(app.state.store.all('mission')) == (4 if variant == 'attempt_limit' else 1)
+                return
+            assert response.status_code == 200, response.text
+            if variant == 'cancel':
+                assert entered.wait(2)
+                assert client.post('/api/missions/' + response.json()['id'] + '/stop').status_code == 200
+            result = wait_mission(client)
+        assert result['status'] == {'pass': 'completed', 'wrong_hash': 'completed_with_issues', 'provider_failure': 'failed', 'output_limit': 'failed', 'cancel': 'cancelled'}[variant]
+        assert result['acceptance_status'] == 'not_assessed'
+        assert result['section_source_mission_id'] == 'source'
+        assert app.state.store.get('mission', 'source') == parent
+        assert client.get(f"/api/missions/{result['id']}/export/pptx").status_code == 400
+        if variant not in {'provider_failure', 'output_limit', 'cancel'}:
+            assert len(calls) == 2 and all('Independent review' not in content for content in calls)
+            assert {s['review']['reviewer_id'] for s in result['steps']} == {b['id'] for b in bots}
+            assert all(s['review']['artifact_sha256'] == result['section_artifact_sha256'] for s in result['steps'])
+            assert result['review_text_sha256'] == client.get('/api/missions/source/outline/review-text').json()['review_text_sha256']

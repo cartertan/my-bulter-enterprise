@@ -249,7 +249,7 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
-  if (state.capabilities?.draft_revision && mission.status === 'completed_with_issues'
+  if (state.capabilities?.draft_revision && mission.attempt_kind !== 'section_artifact_review' && mission.status === 'completed_with_issues'
       && (!mission.sections?.length || state.capabilities?.section_revision)
       && mission.review_criteria?.length && mission.steps.length === 2 * Math.max(1, mission.sections?.length || 0)
       && (mission.revision_round || 0) < 2 && (mission.resume_attempt || 0) < 3
@@ -279,6 +279,12 @@ function renderDetail() {
   }
   if (state.capabilities?.section_presentation_inspection && mission.sections?.length
       && mission.status === 'completed' && mission.section_timing_check?.state === 'pass') {
+    if (!mission.cloud) head.append(button('Run two local artifact reviews', 'secondary', async () => {
+      try {
+        const child = await api(`missions/${mission.id}/review-section-artifact`, 'POST', {});
+        selectedMission = child.id; await refresh();
+      } catch (error) { notify(error.message); }
+    }));
     head.append(button('Inspect section PowerPoint (not reviewed)', 'secondary', async () => {
       try {
         const response = await fetch(`/api/missions/${mission.id}/outline/pptx`, {headers: {'X-Bulter-Token': token}});
@@ -339,6 +345,8 @@ function renderDetail() {
     }));
   }
   panel.append(head, el('p', 'brief', mission.prompt));
+  if (mission.attempt_kind === 'section_artifact_review') panel.append(el('p', 'help',
+    `Independent local text reviews of section mission ${mission.section_source_mission_id}. Artifact SHA-256: ${mission.section_artifact_sha256}. Visual appearance and user acceptance remain unassessed. To retry, select the original section mission; at most three attempts are allowed.`));
   if (mission.revision_round) panel.append(el('p', 'help', `Draft revision round ${mission.revision_round} of 2. User acceptance remains unassessed.`));
   if (mission.parent_mission_id) panel.append(el('p', 'help', attemptDescription(mission)));
   panel.append(el('p', 'help', 'Acceptance: not assessed. A completed run does not establish factual accuracy, a finished artifact, or your approval.'));
