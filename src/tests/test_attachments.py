@@ -1128,7 +1128,7 @@ def test_render_extraction_markers_are_diagnostic_not_acceptance(rendered: str, 
     assert text_presence([rendered], rendered)['state'] == 'present'
 
 
-@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed', 'template_valid', 'template_changed', 'template_missing'])
+@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed', 'template_valid', 'template_changed', 'template_missing', 'mission_during', 'image_during', 'template_during'])
 def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> None:
     """Compose ordered section drafts without promoting their reviews to new bytes."""
     import copy
@@ -1186,9 +1186,28 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             mission['steps'][0]['output'] += ' '
         app.state.store.put('mission', mission)
         before = copy.deepcopy(mission)
-        response = client.get('/api/missions/sections/outline/pptx')
+        from unittest.mock import patch
+        from src.presentation_builder import compose_presentation as real_compose
+
+        def compose_with_source_change(*args, **kwargs) -> bytes:
+            """Change persisted input while composition is running in its worker."""
+            data = real_compose(*args, **kwargs)
+            if variant == 'mission_during':
+                changed = copy.deepcopy(mission)
+                changed['prompt'] = 'Changed brief during composition'
+                app.state.store.put('mission', changed)
+            elif variant in {'image_during', 'template_during'}:
+                asset_id = image_id if variant == 'image_during' else template_id
+                changed = app.state.store.get('attachment', asset_id)
+                changed['filename'] = 'changed-during-composition'
+                app.state.store.put('attachment', changed)
+            return data
+
+        with patch('src.app.compose_presentation', side_effect=compose_with_source_change):
+            response = client.get('/api/missions/sections/outline/pptx')
         if variant not in {'valid', 'image_valid', 'template_valid'}:
             assert response.status_code == 409
+            assert app.state.store.get('section_draft', 'sections') is None
         else:
             assert response.status_code == 200
             assert response.headers['x-artifact-sha256'] == hashlib.sha256(response.content).hexdigest()
@@ -1221,7 +1240,10 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
                 assert draft_hash(before['steps'][(1 - index) * 2]['output']) not in notes
             if image_id:
                 assert any(shape.shape_type == 13 for shape in deck.slides[1].shapes)
-        assert app.state.store.get('mission', mission['id']) == before
+        if variant != 'mission_during':
+            assert app.state.store.get('mission', mission['id']) == before
+        else:
+            assert app.state.store.get('mission', mission['id'])['prompt'] == 'Changed brief during composition'
         assert app.state.store.all('artifact') == []
         assert client.get('/api/missions/sections/export/pptx').status_code == 400
 

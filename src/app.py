@@ -839,6 +839,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         try:
             outline = assemble_section_outline(mission)
             image_assets = {}
+            asset_revisions = {}
             selected_images = {item["id"] for item in mission.get("attachments", []) if item.get("kind") == "image"}
             for image_id in {slide["image_id"] for slide in outline["manifest"]["slides"] if slide.get("image_id")}:
                 if image_id not in selected_images:
@@ -849,6 +850,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     raise ValueError("Selected picture is missing or changed.")
                 image_assets[image_id] = {"bytes": base64.b64decode(attachment["image"], validate=True),
                                           "filename": attachment["filename"]}
+                asset_revisions[image_id] = expected
             template_bytes = None
             if mission.get("template_id"):
                 template_id = mission["template_id"]
@@ -859,6 +861,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         or Path(template["filename"]).suffix.lower() != ".pptx"):
                     raise ValueError("Selected PPTX template is missing or changed.")
                 template_bytes = base64.b64decode(template["raw"], validate=True)
+                asset_revisions[template_id] = expected
             # Carry provenance into the downloaded file, not only its companion JSON.
             slide_origins = {mapping["assembled_slide_id"]: {"section_id": section["section_id"],
                 "source_slide_id": mapping["source_slide_id"], "draft_sha256": section["draft_hash"],
@@ -871,9 +874,20 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 slide["speaker_notes"] += "\nSection assembly provenance (application-generated):\n" + json.dumps(provenance, sort_keys=True)
             # Freeze the exact inspection bytes once. Rebuilding a ZIP on each download
             # can change its hash, leaving subsequent review evidence tied to another file.
+            mission_revision = revision_hash(mission)
+
+            def check_current_inputs() -> None:
+                """Reject source changes across lock waits and threaded composition."""
+                if revision_hash(store.get("mission", identifier)) != mission_revision:
+                    raise ValueError("Inspection mission changed during composition.")
+                for asset_id, expected_revision in asset_revisions.items():
+                    current_asset = store.get("attachment", asset_id)
+                    if not current_asset or revision_hash(current_asset) != expected_revision:
+                        raise ValueError("Inspection asset changed during composition.")
+
             async with section_draft_lock:
+                check_current_inputs()
                 retained = store.get("section_draft", identifier)
-                mission_revision = revision_hash(mission)
                 if retained:
                     if retained.get("mission_id") != identifier or retained.get("mission_revision") != mission_revision:
                         raise ValueError("Inspection source revision changed.")
@@ -886,6 +900,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 else:
                     data = await asyncio.to_thread(compose_presentation, outline["manifest"], outline["sources"], template_bytes, image_assets)
                     projection = office_paragraphs(data, "inspection.pptx", include_notes=True)
+                    # Asset removal/editing can run while the compositor thread is active.
+                    check_current_inputs()
                     store.put("section_draft", {"id": identifier, "mission_id": identifier,
                         "mission_revision": mission_revision, "sha256": hashlib.sha256(data).hexdigest(),
                         "raw": base64.b64encode(data).decode(), "paragraphs": projection,
