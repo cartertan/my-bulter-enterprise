@@ -1166,7 +1166,7 @@ def test_render_extraction_markers_are_diagnostic_not_acceptance(rendered: str, 
     assert text_presence([rendered], rendered)['state'] == 'present'
 
 
-@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed', 'template_valid', 'template_changed', 'template_missing', 'mission_during', 'image_during', 'template_during'])
+@pytest.mark.parametrize('variant', ['valid', 'stale_review', 'overflow', 'image_missing', 'image_valid', 'image_changed', 'template_valid', 'template_changed', 'template_missing', 'mission_during', 'image_during', 'template_during', 'template_image_valid', 'template_image_changed_picture', 'template_image_changed_template'])
 def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> None:
     """Compose ordered section drafts without promoting their reviews to new bytes."""
     import copy
@@ -1187,21 +1187,21 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             template = app.state.store.get('attachment', template_id)
             mission.update(template_id=template_id, attachments=[{'id': template_id, 'kind': 'document'}],
                 source_revisions={'attachment': {template_id: revision_hash(template)}})
-            if variant == 'template_changed':
+            if variant in {'template_changed', 'template_image_changed_template'}:
                 template['filename'] = 'changed.pptx'
                 app.state.store.put('attachment', template)
             if variant == 'template_missing':
                 mission['template_id'] = 'missing'
-        if variant.startswith('image'):
+        if variant.startswith('image') or variant.startswith('template_image'):
             buf = io.BytesIO()
             Image.new('RGB', (100, 50), 'blue').save(buf, format='PNG')
             upload = client.post('/api/attachments?filename=synthetic.png', content=buf.getvalue())
             assert upload.status_code == 200
             image_id = upload.json()['id']
             attachment = app.state.store.get('attachment', image_id)
-            mission['attachments'] = [{'id': image_id, 'kind': 'image'}] if variant != 'image_missing' else []
-            mission['source_revisions'] = {'attachment': {image_id: revision_hash(attachment)}}
-            if variant == 'image_changed':
+            mission.setdefault('attachments', []).extend([{'id': image_id, 'kind': 'image'}] if variant != 'image_missing' else [])
+            mission.setdefault('source_revisions', {}).setdefault('attachment', {})[image_id] = revision_hash(attachment)
+            if variant in {'image_changed', 'template_image_changed_picture'}:
                 attachment['filename'] = 'changed.png'
                 app.state.store.put('attachment', attachment)
         for i in range(2):
@@ -1243,7 +1243,7 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
 
         with patch('src.app.compose_presentation', side_effect=compose_with_source_change):
             response = client.get('/api/missions/sections/outline/pptx')
-        if variant not in {'valid', 'image_valid', 'template_valid'}:
+        if variant not in {'valid', 'image_valid', 'template_valid', 'template_image_valid'}:
             assert response.status_code == 409
             assert app.state.store.get('section_draft', 'sections') is None
         else:
@@ -1259,7 +1259,7 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
             assert retained['artifact_review_status'] == retained['acceptance_status'] == 'not_assessed'
             deck = Presentation(io.BytesIO(response.content))
             assert len(deck.slides) == 2
-            if variant == 'template_valid':
+            if variant in {'template_valid', 'template_image_valid'}:
                 source = Presentation(io.BytesIO(office('pptx', 'Old sample')))
                 assert deck.slide_width == source.slide_width and deck.slide_height == source.slide_height
             text = office_paragraphs(response.content, 'draft.pptx', include_notes=True)
