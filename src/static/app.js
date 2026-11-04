@@ -249,6 +249,14 @@ function renderDetail() {
       } catch (error) { notify(error.message); }
     }));
   }
+  if (mission.attempt_kind === 'section_artifact_review' && mission.status === 'completed_with_issues') {
+    head.append(button('Revise sections from artifact findings', 'secondary', async () => {
+      try {
+        const child = await api(`missions/${mission.id}/revise-sections`, 'POST', {});
+        selectedMission = child.id; await refresh();
+      } catch (error) { notify(error.message); }
+    }));
+  }
   if (state.capabilities?.draft_revision && mission.attempt_kind !== 'section_artifact_review' && mission.status === 'completed_with_issues'
       && (!mission.sections?.length || state.capabilities?.section_revision)
       && mission.review_criteria?.length && mission.steps.length === 2 * Math.max(1, mission.sections?.length || 0)

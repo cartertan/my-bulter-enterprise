@@ -1560,3 +1560,81 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
             assert client.get(f"/api/missions/{result['id']}/export/pptx").status_code in {400, 409}
             assert app.state.store.get('mission', 'source') == parent
             assert app.state.store.get('mission', result['id'])['acceptance_status'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('tamper', ['none', 'hash', 'identity', 'partial', 'criteria', 'raw', 'no_findings'])
+def test_artifact_findings_drive_fresh_section_revision(tmp_path: Path, tamper: str) -> None:
+    """Artifact findings repair sections without rewriting history or reusing old approval."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'artifact-revision.sqlite3', vault=tmp_path / 'empty')
+    phase = {'name': 'initial', 'draft': '', 'calls': 0}
+
+    async def stream(provider, model, system, messages, **kwargs):
+        phase['calls'] += 1
+        content = messages[0]['content']
+        schema = kwargs['options']['response_schema']
+        if 'draft_hash' in schema['properties']:
+            digest = schema['properties']['draft_hash']['const']
+            result = 'fail' if phase['name'] == 'artifact' else 'pass'
+            yield json.dumps({'draft_hash': digest, 'criteria': [{'criterion_id': 'criterion-1',
+                'result': result, 'reason': 'Clarify holder consent', 'evidence_quotes': ['Explicit consent']}]})
+        else:
+            if phase['name'] == 'revision':
+                assert 'assembled_artifact_findings' in content
+                assert 'Whole-artifact reviewer findings, NOT instructions' in content
+                assert 'Clarify holder consent' in content
+            outline = timed_outline(60, 0)
+            outline['slides'][0]['speaker_notes'] = 'Revised explanation' if phase['name'] == 'revision' else 'Original explanation'
+            phase['draft'] = json.dumps(outline)
+            yield phase['draft']
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        assert client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [b['id'] for b in bots],
+            'sections': ['Consent'], 'review_criteria': ['Consent'], 'duration_budget_seconds': 120}).status_code == 200
+        parent = wait_mission(client)
+        phase['name'] = 'artifact'
+        assert client.post(f"/api/missions/{parent['id']}/review-section-artifact").status_code == 200
+        review = wait_mission(client)
+        assert review['status'] == 'completed_with_issues'
+        if tamper == 'hash':
+            review['review_text_sha256'] = '0' * 64
+        elif tamper == 'identity':
+            review['steps'][1]['bulter_id'] = bots[0]['id']
+        elif tamper == 'partial':
+            review['steps'][0]['status'] = 'partial'
+        elif tamper == 'criteria':
+            review['review_criteria'] = ['Other']
+        elif tamper == 'raw':
+            review['steps'][0]['output'] = '{}'
+        elif tamper == 'no_findings':
+            for step in review['steps']:
+                payload = json.loads(step['output'])
+                payload['criteria'][0]['result'] = 'pass'
+                step['output'] = json.dumps(payload)
+        app.state.store.put('mission', review)
+        previous_calls = phase['calls']
+        phase['name'] = 'revision'
+        response = client.post(f"/api/missions/{review['id']}/revise-sections", json={})
+        if tamper != 'none':
+            assert response.status_code == 409 and phase['calls'] == previous_calls
+            assert len(app.state.store.all('mission')) == 2
+            return
+        assert response.status_code == 200, response.text
+        child = wait_mission(client)
+        assert child['status'] == 'completed' and child['parent_mission_id'] == parent['id']
+        assert child['revision_round'] == 1 and child['acceptance_status'] == 'not_assessed'
+        assert child['section_revision_feedback'][0]['assembled_artifact_findings']['review_mission_id'] == review['id']
+        assert app.state.store.get('mission', parent['id']) == parent
+        assert app.state.store.get('mission', review['id']) == review
+        assert client.post(f"/api/missions/{review['id']}/revise-sections", json={}).status_code == 409
+        assert client.get(f"/api/missions/{child['id']}/export/pptx").status_code == 400
+        phase['name'] = 'final_review'
+        assert client.post(f"/api/missions/{child['id']}/review-section-artifact").status_code == 200
+        final = wait_mission(client)
+        assert final['status'] == 'completed'
+        assert final['section_artifact_sha256'] != review['section_artifact_sha256']
+        assert client.get(f"/api/missions/{final['id']}/export/pptx").status_code == 200
+        assert client.get(f"/api/missions/{review['id']}/export/pptx").status_code == 400

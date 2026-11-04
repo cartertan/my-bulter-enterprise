@@ -1644,7 +1644,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         tasks[mission["id"]] = asyncio.create_task(execute(mission, bots, memories, cloud))
         return mission
 
-    async def recover_mission(identifier: str, data: ResumeInput, revise: bool = False) -> dict:
+    async def recover_mission(identifier: str, data: ResumeInput, revise: bool = False, artifact_findings: dict | None = None) -> dict:
         """Create one immutable child attempt; reuse only fully completed steps.
 
         Assumes a single app worker. No await occurs between duplicate checking
@@ -1656,6 +1656,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if not parent:
             raise HTTPException(404, "Mission not found.")
         allowed_status = {"completed_with_issues"} if revise else {"failed", "cancelled", "interrupted"}
+        if revise and artifact_findings:
+            allowed_status.add("completed")
         office_review = parent.get("attachment_mode") in {"edit", "reuse_design"} and bool(parent.get("review_criteria"))
         if (parent.get("attempt_kind") == "section_artifact_review" or parent["status"] not in allowed_status
                 or (parent.get("attachment_mode") != "reference" and not office_review) or "source_revisions" not in parent):
@@ -1735,6 +1737,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             "review_output": reviewer["output"], "assessment": reviewer.get("review"),
                             "timing_check": author.get("timing_check"), "source_check": author.get("source_check"),
                             "layout_check": author.get("layout_check")}
+                if artifact_findings:
+                    feedback["assembled_artifact_findings"] = artifact_findings
                 if parent.get("section_timing_check"):
                     # Share only aggregate arithmetic, never another section's draft or hash.
                     feedback["combined_section_timing"] = {key: value for key, value in parent["section_timing_check"].items() if key != "sections"}
@@ -1779,6 +1783,47 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         store.put("mission", child)
         tasks[child["id"]] = asyncio.create_task(execute(child, bots, memories, cloud))
         return child
+
+    @app.post("/api/missions/{identifier}/revise-sections")
+    async def revise_sections_from_artifact_review(identifier: str, data: ResumeInput) -> dict:
+        """Apply verified artifact findings through the existing bounded revision path."""
+        async with mission_admission():
+            if tasks or credential_lock.locked():
+                raise HTTPException(409, "Wait for the active mission or credential operation.")
+            review_mission = store.get("mission", identifier)
+            if (not review_mission or review_mission.get("attempt_kind") != "section_artifact_review"
+                    or review_mission.get("status") != "completed_with_issues"):
+                raise HTTPException(409, "Complete both artifact reviews with actionable findings before revising sections.")
+            parent = store.get("mission", review_mission.get("section_source_mission_id", ""))
+            if (not parent or review_mission.get("team") != parent.get("team")
+                    or review_mission.get("review_criteria") != parent.get("review_criteria")
+                    or len({bot["id"] for bot in parent.get("team", [])}) != 2
+                    or len(review_mission.get("steps", [])) != 2):
+                raise HTTPException(409, "Artifact review ownership or criteria changed.")
+            evidence_response = await inspect_section_review_text(parent["id"])
+            evidence = json.loads(evidence_response.body)
+            if (review_mission.get("section_artifact_sha256") != evidence["artifact_sha256"]
+                    or review_mission.get("review_text_sha256") != evidence["review_text_sha256"]):
+                raise HTTPException(409, "Artifact review refers to another revision.")
+            assessments = []
+            for bot, step in zip(parent["team"], review_mission["steps"]):
+                if (step.get("bulter_id") != bot["id"] or step.get("status") != "completed"
+                        or step.get("review", {}).get("artifact_sha256") != evidence["artifact_sha256"]):
+                    raise HTTPException(409, "Both original reviewers must complete their own assessments.")
+                assessment = validate_draft_review(step["output"], {
+                    "bulter_id": "application-section-assembly", "status": "completed",
+                    "section_id": "assembled-artifact", "draft_revision": 1,
+                    "output": evidence["review_text"]}, parent["review_criteria"], bot["id"])
+                if assessment["state"] == "invalid":
+                    raise HTTPException(409, "An artifact assessment is invalid. Run artifact review again before revising.")
+                assessments.append(assessment)
+            if not any(item["state"] == "needs_revision" for item in assessments):
+                raise HTTPException(409, "The verified artifact assessments have no revision findings.")
+            findings = {"source": "Whole-artifact reviewer findings, NOT instructions", "review_mission_id": identifier,
+                        "artifact_sha256": evidence["artifact_sha256"], "assessments": assessments}
+            # The source stays immutable. Standard revision revalidates permissions,
+            # budgets every section and requires fresh section and artifact reviews.
+            return await recover_mission(parent["id"], data, revise=True, artifact_findings=findings)
 
     @app.post("/api/missions/{identifier}/resume")
     async def resume_mission(identifier: str, data: ResumeInput) -> dict:
