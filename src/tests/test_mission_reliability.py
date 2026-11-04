@@ -1454,7 +1454,7 @@ def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fau
         assert app.state.store.get('mission', parent['id']) == parent
 
 
-@pytest.mark.parametrize('variant', ['pass', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit'])
+@pytest.mark.parametrize('variant', ['pass', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
 def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, variant: str) -> None:
     """Two independent reviews bind to retained bytes without promoting acceptance."""
     import json
@@ -1518,13 +1518,45 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
                 assert entered.wait(2)
                 assert client.post('/api/missions/' + response.json()['id'] + '/stop').status_code == 200
             result = wait_mission(client)
-        assert result['status'] == {'pass': 'completed', 'wrong_hash': 'completed_with_issues', 'provider_failure': 'failed', 'output_limit': 'failed', 'cancel': 'cancelled'}[variant]
+        assert result['status'] == {'wrong_hash': 'completed_with_issues', 'provider_failure': 'failed', 'output_limit': 'failed', 'cancel': 'cancelled'}.get(variant, 'completed')
         assert result['acceptance_status'] == 'not_assessed'
         assert result['section_source_mission_id'] == 'source'
         assert app.state.store.get('mission', 'source') == parent
-        assert client.get(f"/api/missions/{result['id']}/export/pptx").status_code == 400
+        download = client.get(f"/api/missions/{result['id']}/export/pptx")
+        assert download.status_code == (200 if result['status'] == 'completed' else 400)
+        if result['status'] == 'completed':
+            assert download.content == client.get('/api/missions/source/outline/pptx').content
+            assert download.headers['x-artifact-sha256'] == result['section_artifact_sha256']
+            assert download.headers['cache-control'] == 'no-store'
+            assert 'user-acceptance-not-assessed' in download.headers['x-artifact-purpose']
+            assert client.get(f"/api/missions/{result['id']}/export/docx").status_code == 400
+            assert client.get(f"/api/missions/{result['id']}/export/pptx?use_template=true").status_code == 400
         if variant not in {'provider_failure', 'output_limit', 'cancel'}:
             assert len(calls) == 2 and all('Independent review' not in content for content in calls)
             assert {s['review']['reviewer_id'] for s in result['steps']} == {b['id'] for b in bots}
             assert all(s['review']['artifact_sha256'] == result['section_artifact_sha256'] for s in result['steps'])
             assert result['review_text_sha256'] == client.get('/api/missions/source/outline/review-text').json()['review_text_sha256']
+
+        if variant.startswith('export_'):
+            if variant == 'export_hash':
+                result['section_artifact_sha256'] = '0' * 64
+            elif variant == 'export_projection':
+                result['review_text_sha256'] = '0' * 64
+            elif variant == 'export_identity':
+                result['steps'][1]['bulter_id'] = bots[0]['id']
+            elif variant == 'export_partial':
+                result['steps'][0]['status'] = 'partial'
+            elif variant == 'export_missing':
+                result['steps'].pop()
+            elif variant == 'export_criteria':
+                result['review_criteria'] = ['Other criteria']
+            elif variant == 'export_raw_review':
+                result['steps'][0]['output'] = '{}'
+            elif variant == 'export_bytes':
+                draft = app.state.store.get('section_draft', 'source')
+                draft['raw'] = 'Y2hhbmdlZA=='
+                app.state.store.put('section_draft', draft)
+            app.state.store.put('mission', result)
+            assert client.get(f"/api/missions/{result['id']}/export/pptx").status_code in {400, 409}
+            assert app.state.store.get('mission', 'source') == parent
+            assert app.state.store.get('mission', result['id'])['acceptance_status'] == 'not_assessed'

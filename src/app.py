@@ -1099,6 +1099,38 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if not mission:
             raise HTTPException(404, "Mission not found.")
         try:
+            if mission.get("attempt_kind") == "section_artifact_review":
+                if format_name != "pptx" or use_template or mission["status"] != "completed":
+                    raise ValueError("A completed section artifact review permits only the exact reviewed PPTX.")
+                parent = store.get("mission", mission.get("section_source_mission_id", ""))
+                if (not parent or mission.get("team") != parent.get("team")
+                        or mission.get("review_criteria") != parent.get("review_criteria")
+                        or len({bot["id"] for bot in parent.get("team", [])}) != 2
+                        or len(mission.get("steps", [])) != 2):
+                    raise ValueError("Section review ownership or criteria changed.")
+                projection_response = await inspect_section_review_text(parent["id"])
+                evidence = json.loads(projection_response.body)
+                if (mission.get("section_artifact_sha256") != evidence["artifact_sha256"]
+                        or mission.get("review_text_sha256") != evidence["review_text_sha256"]):
+                    raise ValueError("Section review refers to a different artifact revision.")
+                for bot, step in zip(parent["team"], mission["steps"]):
+                    if step.get("status") != "completed" or step.get("bulter_id") != bot["id"]:
+                        raise ValueError("Both original reviewers must complete their own assessments.")
+                    checked = validate_draft_review(step["output"], {
+                        "bulter_id": "application-section-assembly", "status": "completed",
+                        "section_id": "assembled-artifact", "draft_revision": 1,
+                        "output": evidence["review_text"]}, parent["review_criteria"], bot["id"])
+                    if (checked["state"] != "criteria_pass"
+                            or step.get("review", {}).get("artifact_sha256") != evidence["artifact_sha256"]):
+                        raise ValueError("Both reviews must pass against the exact retained artifact.")
+                artifact_response = await inspect_section_presentation(parent["id"])
+                data = artifact_response.body
+                if hashlib.sha256(data).hexdigest() != evidence["artifact_sha256"]:
+                    raise ValueError("Section artifact changed during export.")
+                return Response(data, media_type=artifact_response.media_type, headers={
+                    "Content-Disposition": 'attachment; filename="bulter-text-reviewed-sections.pptx"',
+                    "Cache-Control": "no-store", "X-Artifact-SHA256": evidence["artifact_sha256"],
+                    "X-Artifact-Purpose": "two-text-reviews-passed; visual-and-user-acceptance-not-assessed"})
             if mission.get("artifact_id"):
                 artifact = store.get("artifact", mission["artifact_id"])
                 if (mission["status"] != "completed" or not artifact or artifact["format"] != format_name
