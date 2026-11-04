@@ -1263,6 +1263,16 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
                 source = Presentation(io.BytesIO(office('pptx', 'Old sample')))
                 assert deck.slide_width == source.slide_width and deck.slide_height == source.slide_height
             text = office_paragraphs(response.content, 'draft.pptx', include_notes=True)
+            evidence_response = client.get('/api/missions/sections/outline/review-text')
+            assert evidence_response.status_code == 200
+            evidence = evidence_response.json()
+            assert evidence['artifact_sha256'] == hashlib.sha256(response.content).hexdigest()
+            assert json.loads(evidence['review_text']) == {'artifact_sha256': evidence['artifact_sha256'], 'paragraphs': text}
+            assert evidence['review_text_sha256'] == draft_hash(evidence['review_text'])
+            assert evidence_response.headers['x-review-text-sha256'] == evidence['review_text_sha256']
+            assert evidence_response.headers['cache-control'] == 'no-store'
+            assert evidence['artifact_review_status'] == evidence['acceptance_status'] == 'not_assessed'
+            assert client.get('/api/missions/sections/outline/review-text').content == evidence_response.content
             assert 'Section 1' in text and 'Section 2' in text and 'Consent' in text and 'Issue' in text
             assert any('Notes 2' in part for part in text)
             assert 'Old sample' not in text
@@ -1286,8 +1296,9 @@ def test_section_powerpoint_is_inspection_only(tmp_path: Path, variant: str) -> 
         assert client.get('/api/missions/sections/export/pptx').status_code == 400
 
 
+@pytest.mark.parametrize('review_text', [False, True])
 @pytest.mark.parametrize('change', ['none', 'bytes', 'hash', 'projection', 'owner', 'revision', 'mission'])
-def test_retained_section_inspection_survives_restart_and_rejects_changes(tmp_path: Path, change: str) -> None:
+def test_retained_section_inspection_survives_restart_and_rejects_changes(tmp_path: Path, change: str, review_text: bool) -> None:
     """A restart keeps identical inspection bytes; changed evidence fails closed."""
     import copy
     from unittest.mock import patch
@@ -1327,10 +1338,15 @@ def test_retained_section_inspection_survives_restart_and_rejects_changes(tmp_pa
     restarted = create_app(database)
     with TestClient(restarted) as client, patch('src.app.compose_presentation', side_effect=AssertionError('Do not regenerate')):
         client.headers['x-bulter-token'] = restarted.state.csrf
-        result = client.get('/api/missions/retained/outline/pptx')
+        result = client.get('/api/missions/retained/outline/' + ('review-text' if review_text else 'pptx'))
         assert result.status_code == (200 if change == 'none' else 409)
         if change == 'none':
-            assert result.content == response.content
+            if review_text:
+                assert result.json()['artifact_sha256'] == response.headers['x-artifact-sha256']
+                assert result.json()['review_text_sha256'] == draft_hash(result.json()['review_text'])
+                assert result.json()['artifact_review_status'] == 'not_assessed'
+            else:
+                assert result.content == response.content
             assert result.headers['x-artifact-sha256'] == response.headers['x-artifact-sha256']
         assert restarted.state.store.get('section_draft', 'retained') == before
         assert restarted.state.store.get('mission', 'retained')['acceptance_status'] == 'not_assessed'

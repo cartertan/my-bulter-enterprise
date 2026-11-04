@@ -922,6 +922,27 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             "Cache-Control": "no-store", "X-Artifact-SHA256": hashlib.sha256(data).hexdigest(),
             "X-Artifact-Purpose": "inspection-only; artifact-review-not-assessed; acceptance-not-assessed"})
 
+    @app.get("/api/missions/{identifier}/outline/review-text")
+    async def inspect_section_review_text(identifier: str) -> Response:
+        """Expose the exact retained section artifact projection, without a review verdict."""
+        # Reuse all ownership, source, timing, peer-review and byte-integrity gates.
+        artifact_response = await inspect_section_presentation(identifier)
+        data = artifact_response.body
+        artifact_hash = hashlib.sha256(data).hexdigest()
+        paragraphs = office_paragraphs(data, "inspection.pptx", include_notes=True)
+        review_text = json.dumps({"artifact_sha256": artifact_hash, "paragraphs": paragraphs}, ensure_ascii=False)
+        payload = {"schema_version": 1, "mission_id": identifier, "artifact_sha256": artifact_hash,
+                   "review_projection_version": 2, "review_text": review_text,
+                   "review_text_sha256": draft_hash(review_text),
+                   "scope": "Extracted slide text and speaker notes; rendered appearance is not assessed.",
+                   "artifact_review_status": "not_assessed", "acceptance_status": "not_assessed"}
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return Response(encoded, media_type="application/json", headers={
+            "Content-Disposition": 'attachment; filename="bulter-section-review-text.json"',
+            "Cache-Control": "no-store", "X-Artifact-SHA256": artifact_hash,
+            "X-Review-Text-SHA256": payload["review_text_sha256"],
+            "X-Artifact-Purpose": "review-evidence-only; artifact-review-not-assessed; acceptance-not-assessed"})
+
     @app.get("/api/missions/{identifier}/artifact/draft")
     async def inspect_artifact_draft(identifier: str) -> Response:
         """Download a complete author artifact for inspection, without granting acceptance."""

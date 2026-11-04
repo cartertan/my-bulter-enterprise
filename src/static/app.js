@@ -288,6 +288,15 @@ function renderDetail() {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (error) { notify(error.message); }
     }));
+    head.append(button('Download section review evidence (JSON)', 'secondary', async () => {
+      try {
+        const response = await fetch(`/api/missions/${mission.id}/outline/review-text`, {headers: {'X-Bulter-Token': token}});
+        if (!response.ok) throw new Error((await response.json()).detail);
+        const url = URL.createObjectURL(await response.blob());
+        const a = document.createElement('a'); a.href = url; a.download = 'bulter-section-review-text.json'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { notify(error.message); }
+    }));
   }
   if (state.capabilities?.artifact_draft_inspection && mission.artifact_id
       && ['completed', 'completed_with_issues', 'failed', 'cancelled', 'interrupted'].includes(mission.status)
