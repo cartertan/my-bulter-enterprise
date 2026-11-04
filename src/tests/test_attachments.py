@@ -678,7 +678,7 @@ def test_composition_four_citations_use_explicit_spacing() -> None:
     assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)
 
 
-@pytest.mark.parametrize('failure', ['none', 'hash', 'existing', 'renderer', 'page_count', 'image', 'corrupt_image', 'timeout'])
+@pytest.mark.parametrize('failure', ['none', 'secondary_found', 'hash', 'existing', 'renderer', 'page_count', 'image', 'corrupt_image', 'timeout'])
 def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, monkeypatch, failure: str) -> None:
     """Partial/stale render evidence never produces a successful report."""
     import hashlib
@@ -708,9 +708,13 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
             (output / 'slide-1.png').write_bytes(b'\x89PNG\r\n\x1a\ncorrupt' if failure == 'corrupt_image' else image.getvalue())
     monkeypatch.setattr('scripts.render_presentation.subprocess.run', run)
     document = MagicMock()
-    document.__enter__.return_value = SimpleNamespace(pages=[] if failure == 'page_count' else [SimpleNamespace(extract_text=lambda: 'Synthetic slide')])
+    document.__enter__.return_value = SimpleNamespace(pages=[] if failure == 'page_count' else [SimpleNamespace(extract_text=lambda: '(cid:1)' if failure == 'secondary_found' else 'Synthetic slide')])
     monkeypatch.setattr('scripts.render_presentation.pdfplumber.open', lambda path: document)
-    if failure != 'none':
+    if failure == 'secondary_found':
+        from scripts.render_presentation import text_presence
+        monkeypatch.setattr('scripts.render_presentation.independent_text_check', lambda *args: {
+            'state': 'complete', 'extractor': 'pdftotext', 'pages': [text_presence(['Synthetic slide'], 'Synthetic slide')]})
+    if failure not in {'none', 'secondary_found'}:
         with pytest.raises((ValueError, OSError, subprocess.TimeoutExpired)):
             render_presentation(source, 'wrong' if failure == 'hash' else digest, output)
         assert not (output / 'render-report.json').exists()
@@ -723,9 +727,43 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         assert len(calls) == 2
         assert report['artifact_sha256'] == digest and report['slide_count'] == 1
         assert report['visual_inspection'] == 'pending' and report['user_acceptance'] == 'not_assessed'
+        if failure == 'secondary_found':
+            assert report['text_presence'] == 'needs_review'
+            assert report['pages'][0]['text_extraction_comparison'] == {
+                'primary_missing_found_by_secondary': ['Synthetic slide'], 'missing_in_both': []}
         assert report['pages'][0]['sha256'] == hashlib.sha256((output / 'slide-1.png').read_bytes()).hexdigest()
         assert json.loads((output / 'render-report.json').read_text()) == report
         assert output.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize('variant', ['valid', 'empty_page', 'missing', 'count', 'encoding', 'timeout', 'process'])
+def test_independent_pdf_text_check_is_bounded_and_page_scoped(tmp_path: Path, monkeypatch, variant: str) -> None:
+    """Secondary extraction keeps page identity and returns safe diagnostics on failure."""
+    import subprocess
+    from types import SimpleNamespace
+    from scripts.render_presentation import independent_text_check
+    monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda name: None if variant == 'missing' else name)
+
+    def run(command: list, **kwargs) -> SimpleNamespace:
+        assert command == ['pdftotext', '-enc', 'UTF-8', '-layout', str(tmp_path / 'artifact.pdf'), '-']
+        assert kwargs == {'check': True, 'capture_output': True, 'timeout': 120}
+        if variant == 'timeout':
+            raise subprocess.TimeoutExpired(command, 120)
+        if variant == 'process':
+            raise subprocess.CalledProcessError(1, command, stderr=b'private text')
+        return SimpleNamespace(stdout=b'\xff' if variant == 'encoding' else
+                               b'First\f' if variant == 'count' else
+                               b'First\f\f' if variant == 'empty_page' else b'First\fSecond\f')
+
+    monkeypatch.setattr('scripts.render_presentation.subprocess.run', run)
+    result = independent_text_check(tmp_path / 'artifact.pdf', [['First'], ['Second']])
+    if variant in {'valid', 'empty_page'}:
+        assert result['state'] == 'complete'
+        assert result['pages'][0]['state'] == 'present'
+        assert result['pages'][1]['state'] == ('present' if variant == 'valid' else 'needs_review')
+    else:
+        assert result['state'] == 'unavailable'
+        assert 'private text' not in json.dumps(result)
 
 
 @pytest.mark.parametrize('rendered,expected_state', [

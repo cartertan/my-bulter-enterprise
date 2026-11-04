@@ -57,6 +57,28 @@ def text_presence(expected: list[str], rendered: str) -> dict:
             'cid_marker_count': cid_markers, 'replacement_character_count': replacements}
 
 
+def independent_text_check(pdf: Path, expected_pages: list[list[str]]) -> dict:
+    """Cross-check flagged PDF text with Poppler without clearing primary findings."""
+    extractor = shutil.which('pdftotext')
+    if not extractor:
+        return {'state': 'unavailable', 'reason': 'pdftotext_not_installed'}
+    try:
+        result = subprocess.run([extractor, '-enc', 'UTF-8', '-layout', str(pdf), '-'],
+                                check=True, capture_output=True, timeout=120)
+        text = result.stdout.decode('utf-8', errors='strict')
+        pages = text.split('\f')
+        # Poppler appends a page terminator; preserve actual empty interior pages.
+        if pages and not pages[-1].strip():
+            pages.pop()
+        if len(pages) != len(expected_pages):
+            return {'state': 'unavailable', 'reason': 'page_count_mismatch'}
+        return {'state': 'complete', 'extractor': 'pdftotext',
+                'pages': [text_presence(expected, page) for expected, page in zip(expected_pages, pages)]}
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        # Secondary diagnostics must not hide or replace the original render report.
+        return {'state': 'unavailable', 'reason': 'extraction_failed'}
+
+
 def render_presentation(source: Path, expected_sha256: str, output: Path) -> dict:
     """Create fresh render evidence; reject stale hashes and incomplete page sets."""
     data = source.read_bytes()
@@ -113,6 +135,16 @@ def render_presentation(source: Path, expected_sha256: str, output: Path) -> dic
               'slide_count': slide_count, 'pages': pages, 'render_status': 'complete',
               'text_presence': 'needs_review' if any(page['text_presence']['state'] == 'needs_review' for page in pages) else 'no_missing_fragments_detected',
               'visual_inspection': 'pending', 'user_acceptance': 'not_assessed'}
+    if any(page['text_presence']['state'] == 'needs_review' or page['text_presence']['extraction_warnings'] for page in pages):
+        report['independent_text_check'] = independent_text_check(
+            pdf, [slide_text_fragments(slide.shapes) for slide in deck.slides])
+        if report['independent_text_check']['state'] == 'complete':
+            for page, secondary in zip(pages, report['independent_text_check']['pages']):
+                primary_missing = page['text_presence']['missing_fragments']
+                secondary_missing = secondary['missing_fragments']
+                page['text_extraction_comparison'] = {
+                    'primary_missing_found_by_secondary': [text for text in primary_missing if text not in secondary_missing],
+                    'missing_in_both': [text for text in primary_missing if text in secondary_missing]}
     (output / 'render-report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     return report
 
@@ -135,6 +167,8 @@ def main() -> int:
         LOGGER.warning('Some slide text was not found in PDF extraction; inspect the private report.')
         if any(page['text_presence'].get('extraction_warnings') for page in report['pages']):
             LOGGER.warning('PDF extraction contains possible unmapped glyphs; compare the rendered pages before diagnosing missing content.')
+        if any(page.get('text_extraction_comparison', {}).get('primary_missing_found_by_secondary') for page in report['pages']):
+            LOGGER.warning('Independent PDF extraction found some flagged text; see the private comparison. Visual review remains required.')
         return 2
     return 0
 
