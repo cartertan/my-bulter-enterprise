@@ -1394,3 +1394,61 @@ def test_section_layout_guidance_is_scoped_to_timed_authors(budget, author: bool
         assert 'image_id only from selected image attachments' in prompt
         assert 'do not combine a picture and flow_steps on one slide' in prompt
         assert 'outline peer review does not establish artifact or visual acceptance' in prompt
+
+
+@pytest.mark.parametrize('fault', ['title', 'panel_body', 'flow_label', 'unknown_image', 'line_breaks'])
+def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fault: str) -> None:
+    """Unrenderable sections remain revisable even when their model reviewer passes."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'layout-check.sqlite3')
+    state = {'revision': False, 'draft': ''}
+
+    async def stream(provider, model, system, messages, **kwargs):
+        content = messages[0]['content']
+        reviewer = 'draft_hash' in kwargs['options']['response_schema']['properties']
+        if reviewer:
+            assert 'SECTION LAYOUT CHECK' in content
+            yield json.dumps({'draft_hash': draft_hash(state['draft']), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Consent is present',
+                 'evidence_quotes': ['Explicit consent']}]})
+        else:
+            if state['revision']:
+                assert '"layout_check"' in content and 'Section cannot use the inspection layout' in content
+            outline = timed_outline(60, 0)
+            if not state['revision']:
+                slide = outline['slides'][0]
+                if fault == 'title':
+                    slide['title'] = 'x' * 91
+                elif fault == 'panel_body':
+                    slide.update(body='Explicit consent ' + 'x' * 410, flow_steps=['Consent', 'Issue'])
+                elif fault == 'flow_label':
+                    slide['flow_steps'] = ['Consent', 'x' * 51]
+                elif fault == 'unknown_image':
+                    slide.update(image_id='not-selected', image_caption='Example')
+                else:
+                    slide['title'] = 'Title\n' * 10
+            state['draft'] = json.dumps(outline)
+            yield state['draft']
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [b['id'] for b in bots],
+            'sections': ['Consent'], 'review_criteria': ['Consent'], 'duration_budget_seconds': 120})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert parent['status'] == 'completed_with_issues'
+        assert parent['steps'][0]['layout_check']['state'] == 'invalid'
+        assert parent['steps'][1]['review']['state'] == 'needs_revision'
+        assert 'section_layout' in parent['steps'][1]['review']['blocking_checks']
+        assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
+        assert not app.state.store.all('artifact') and not app.state.store.all('section_draft')
+        state['revision'] = True
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['steps'][0]['layout_check']['state'] == 'pass'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
+        assert app.state.store.get('mission', parent['id']) == parent

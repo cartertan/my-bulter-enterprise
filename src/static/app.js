@@ -357,6 +357,7 @@ function renderDetail() {
     block.append(title, el('p', 'help', `${step.memory_ids.length} notes selected from ${step.eligible_memory_count ?? step.memory_ids.length} permitted notes`));
     for (const note of step.memory_provenance || []) block.append(el('p', 'help', `${note.title} · ${note.category} · ${note.source_path || 'Local memory'} · SHA-256 ${note.revision}`));
     if (step.source_check) block.append(el('p', 'help', `Source references: ${step.source_check.state}. Factual accuracy and claim support remain unassessed.${step.source_check.error ? ' ' + step.source_check.error : ''}`));
+    if (step.layout_check) block.append(el('p', 'help', `Section layout: ${step.layout_check.state}. Visual appearance remains unassessed.${step.layout_check.error ? ' ' + step.layout_check.error : ''}`));
     if (step.timing_check) {
       const check = step.timing_check;
       block.append(el('p', 'help', `Timing: ${check.state} · ${check.total_seconds ?? 'unverified'} / ${check.budget_seconds} seconds including discussion`));
