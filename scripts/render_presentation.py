@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 import shutil
@@ -79,7 +80,8 @@ def independent_text_check(pdf: Path, expected_pages: list[list[str]]) -> dict:
         return {'state': 'unavailable', 'reason': 'extraction_failed'}
 
 
-def render_presentation(source: Path, expected_sha256: str, output: Path) -> dict:
+def render_presentation(source: Path, expected_sha256: str, output: Path,
+                        font_config: Path | None = None, font_dir: Path | None = None) -> dict:
     """Create fresh render evidence; reject stale hashes and incomplete page sets."""
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -93,21 +95,41 @@ def render_presentation(source: Path, expected_sha256: str, output: Path) -> dic
     renderer, rasterizer = shutil.which('soffice'), shutil.which('pdftoppm')
     if not renderer or not rasterizer:
         raise ValueError('Local LibreOffice (soffice) and pdftoppm are required.')
+    if (font_config is None) != (font_dir is None):
+        raise ValueError('Supply both an existing Fontconfig configuration and font directory.')
+    if font_config is not None:
+        font_config, font_dir = font_config.resolve(strict=True), font_dir.resolve(strict=True)
+        if not font_config.is_file() or not font_dir.is_dir():
+            raise ValueError('Font configuration must be a file and fonts must be a directory.')
     # Never reuse prior evidence or overwrite a user's files, even on retry.
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     output = output.resolve()
     local_source = output / 'artifact.pptx'
     local_source.write_bytes(data)
     profile = output / 'office-profile'
+    render_options = {}
+    if font_config is not None:
+        # Keep fonts in their original licensed installation. Only this renderer
+        # process sees the existing configuration and private XDG lookup/cache paths.
+        font_data = output / 'font-data'
+        font_data.mkdir(mode=0o700)
+        (font_data / 'fonts').symlink_to(font_dir, target_is_directory=True)
+        font_cache = output / 'font-cache'
+        font_cache.mkdir(mode=0o700)
+        render_options['env'] = {**os.environ, 'FONTCONFIG_FILE': str(font_config),
+            'FONTCONFIG_PATH': str(font_config.parent), 'XDG_DATA_HOME': str(font_data),
+            'XDG_CACHE_HOME': str(font_cache)}
     subprocess.run([renderer, f'-env:UserInstallation={profile.as_uri()}', '--headless',
                     '--convert-to', 'pdf', '--outdir', str(output), str(local_source)],
-                   check=True, capture_output=True, timeout=120)
+                   check=True, capture_output=True, timeout=120, **render_options)
     pdf = output / 'artifact.pdf'
     if not pdf.is_file() or not pdf.read_bytes().startswith(b'%PDF-'):
         raise ValueError('Renderer did not produce a valid PDF.')
     with pdfplumber.open(pdf) as document:
         page_count = len(document.pages)
         extracted = [page.extract_text() or "" for page in document.pages]
+        rendered_fonts = sorted({char['fontname'] for page in document.pages
+                                 for char in getattr(page, 'chars', []) if char.get('fontname')})
     if page_count != slide_count:
         raise ValueError('Rendered page count does not match the source slide count.')
     subprocess.run([rasterizer, '-png', '-r', '120', str(pdf), str(output / 'slide')],
@@ -135,6 +157,8 @@ def render_presentation(source: Path, expected_sha256: str, output: Path) -> dic
               'slide_count': slide_count, 'pages': pages, 'render_status': 'complete',
               'text_presence': 'needs_review' if any(page['text_presence']['state'] == 'needs_review' for page in pages) else 'no_missing_fragments_detected',
               'visual_inspection': 'pending', 'user_acceptance': 'not_assessed'}
+    report['rendered_font_names'] = rendered_fonts
+    report['custom_font_environment'] = font_config is not None
     if any(page['text_presence']['state'] == 'needs_review' or page['text_presence']['extraction_warnings'] for page in pages):
         report['independent_text_check'] = independent_text_check(
             pdf, [slide_text_fragments(slide.shapes) for slide in deck.slides])
@@ -155,10 +179,12 @@ def main() -> int:
     parser.add_argument('source', type=Path)
     parser.add_argument('--sha256', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--font-config', type=Path, help='Existing trusted Fontconfig configuration; not modified.')
+    parser.add_argument('--font-dir', type=Path, help='Existing licensed font directory; used only by this render.')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     try:
-        report = render_presentation(args.source, args.sha256, args.output)
+        report = render_presentation(args.source, args.sha256, args.output, args.font_config, args.font_dir)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         LOGGER.error('Render evidence incomplete (%s); use a new output directory on retry.', type(exc).__name__)
         return 1

@@ -678,7 +678,7 @@ def test_composition_four_citations_use_explicit_spacing() -> None:
     assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)
 
 
-@pytest.mark.parametrize('failure', ['none', 'secondary_found', 'hash', 'existing', 'renderer', 'page_count', 'image', 'corrupt_image', 'timeout'])
+@pytest.mark.parametrize('failure', ['none', 'secondary_found', 'font_environment', 'hash', 'existing', 'renderer', 'page_count', 'image', 'corrupt_image', 'timeout'])
 def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, monkeypatch, failure: str) -> None:
     """Partial/stale render evidence never produces a successful report."""
     import hashlib
@@ -694,6 +694,14 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         output.mkdir()
         (output / 'sentinel').write_text('preserve')
     monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda name: None if failure == 'renderer' else name)
+    font_options = {}
+    if failure == 'font_environment':
+        monkeypatch.setenv('XDG_DATA_HOME', 'unchanged-parent-value')
+        config = tmp_path / 'fixture.conf'
+        config.write_text('<fontconfig/>')
+        fonts = tmp_path / 'licensed-fonts'
+        fonts.mkdir()
+        font_options = {'font_config': config, 'font_dir': fonts}
     calls = []
     def run(command, **kwargs):
         calls.append(command)
@@ -701,6 +709,11 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         if failure == 'timeout':
             raise subprocess.TimeoutExpired(command, 120)
         if command[0] == 'soffice':
+            if failure == 'font_environment':
+                assert kwargs['env']['FONTCONFIG_FILE'] == str(config)
+                assert kwargs['env']['XDG_DATA_HOME'] == str(output / 'font-data')
+                assert kwargs['env']['XDG_CACHE_HOME'] == str(output / 'font-cache')
+                assert (output / 'font-data/fonts').resolve() == fonts
             (output / 'artifact.pdf').write_bytes(b'%PDF-synthetic fixture')
         elif failure != 'image':
             image = io.BytesIO()
@@ -714,7 +727,7 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         from scripts.render_presentation import text_presence
         monkeypatch.setattr('scripts.render_presentation.independent_text_check', lambda *args: {
             'state': 'complete', 'extractor': 'pdftotext', 'pages': [text_presence(['Synthetic slide'], 'Synthetic slide')]})
-    if failure not in {'none', 'secondary_found'}:
+    if failure not in {'none', 'secondary_found', 'font_environment'}:
         with pytest.raises((ValueError, OSError, subprocess.TimeoutExpired)):
             render_presentation(source, 'wrong' if failure == 'hash' else digest, output)
         assert not (output / 'render-report.json').exists()
@@ -723,7 +736,12 @@ def test_render_evidence_requires_exact_artifact_and_all_pages(tmp_path: Path, m
         if failure == 'existing':
             assert (output / 'sentinel').read_text() == 'preserve'
     else:
-        report = render_presentation(source, digest, output)
+        report = render_presentation(source, digest, output, **font_options)
+        assert report['custom_font_environment'] is (failure == 'font_environment')
+        if failure == 'font_environment':
+            assert config.read_text() == '<fontconfig/>'
+            import os
+            assert os.environ['XDG_DATA_HOME'] == 'unchanged-parent-value'
         assert len(calls) == 2
         assert report['artifact_sha256'] == digest and report['slide_count'] == 1
         assert report['visual_inspection'] == 'pending' and report['user_acceptance'] == 'not_assessed'
@@ -1351,3 +1369,27 @@ def test_retained_section_inspection_survives_restart_and_rejects_changes(tmp_pa
         assert restarted.state.store.get('section_draft', 'retained') == before
         assert restarted.state.store.get('mission', 'retained')['acceptance_status'] == 'not_assessed'
         assert client.get('/api/missions/retained/export/pptx').status_code == 400
+
+
+@pytest.mark.parametrize('problem', ['unpaired', 'missing_config', 'missing_fonts', 'config_directory', 'fonts_file'])
+def test_render_font_inputs_reject_before_output(tmp_path: Path, monkeypatch, problem: str) -> None:
+    """Explicit font lookup inputs cannot fall back silently or overwrite configuration."""
+    import hashlib
+    from scripts.render_presentation import render_presentation
+    source = tmp_path / 'source.pptx'
+    source.write_bytes(office('pptx', 'Synthetic slide'))
+    config = tmp_path / 'font.conf'
+    fonts = tmp_path / 'fonts'
+    if problem == 'config_directory':
+        config.mkdir()
+    elif problem != 'missing_config':
+        config.write_text('<fontconfig/>')
+    if problem == 'fonts_file':
+        fonts.write_text('not a directory')
+    elif problem != 'missing_fonts':
+        fonts.mkdir()
+    monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda name: name)
+    with pytest.raises((ValueError, OSError)):
+        render_presentation(source, hashlib.sha256(source.read_bytes()).hexdigest(), tmp_path / 'output',
+                            config, None if problem == 'unpaired' else fonts)
+    assert not (tmp_path / 'output').exists()
