@@ -1207,6 +1207,13 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
             raise ProviderError('Synthetic interruption')
         if not is_reviewer:
             assert 'budget is shared by ALL sections' in content
+            assert 'Section inspection layout:' in content
+            assert 'Never invent image IDs or remote image URLs.' in content
+            assert 'inspection-only' in content
+            layout_fields = kwargs['options']['response_schema']['$defs']['TimedSlide']['properties']
+            assert layout_fields['title']['maxLength'] == 90
+            assert layout_fields['body']['maxLength'] == 700
+            assert layout_fields['flow_steps']['items']['maxLength'] == 50
             if exact:
                 assert 'Required slide count across all 2 sections combined: exactly 2.' in content
                 assert 'Required total duration across all 2 sections combined: exactly 100 seconds' in content
@@ -1372,3 +1379,18 @@ def test_section_template_rejects_word_before_model_calls(tmp_path: Path) -> Non
         assert response.status_code == 400 and 'PPTX' in response.json()['detail']
         generate.assert_not_called()
         assert app.state.store.all('mission') == []
+
+
+@pytest.mark.parametrize('budget,author,sections,expected', [
+    (120, True, 2, True), (None, True, 2, False),
+    (120, False, 2, False), (120, True, 0, False)])
+def test_section_layout_guidance_is_scoped_to_timed_authors(budget, author: bool, sections: int, expected: bool) -> None:
+    """Preflight and execution share visual guidance without changing ordinary outlines."""
+    from src.app import timing_prompt
+    prompt = timing_prompt('Wallet', budget, author, section_count=sections)
+    assert ('Section inspection layout:' in prompt) is expected
+    if expected:
+        assert '"flow_steps": ["First step", "Second step"]' in prompt
+        assert 'image_id only from selected image attachments' in prompt
+        assert 'do not combine a picture and flow_steps on one slide' in prompt
+        assert 'outline peer review does not establish artifact or visual acceptance' in prompt

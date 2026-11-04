@@ -305,7 +305,7 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
     if author:
         slide = {"slide_id": "slide-1", "title": "Title", "body": "Slide content",
                  "speaker_notes": "Notes", "duration_seconds": 60}
-        if compose:
+        if compose or section_count:
             # One complete example avoids teaching an outline schema that omits required geometry.
             slide["flow_steps"] = ["First step", "Second step"]
         example = json.dumps({"slides": [slide], "discussion_seconds": 0}, ensure_ascii=False)
@@ -313,7 +313,15 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
                    + ". Example values illustrate structure only; use the requested content and timings, not the sample values. "
                    "Use unique slide IDs and integer seconds. Include every planned slide and discussion. ")
         result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram."
-                   if compose else "This is a draft outline, not a generated artifact.")
+                   if compose or section_count else "This is a draft outline, not a generated artifact.")
+        if section_count:
+            # Section drafts feed the same inspection compositor as whole decks.
+            # Include this guidance here so start/revision preflight counts it too.
+            result += ("\nSection inspection layout: titles <=90 characters; body <=700 characters, or <=420 on flow/picture slides. "
+                       "Use flow_steps for relevant process diagrams: 2–5 labels, each <=50 characters. "
+                       "For pictures, use image_id only from selected image attachments and image_caption (1–120 characters); "
+                       "do not combine a picture and flow_steps on one slide. Never invent image IDs or remote image URLs. "
+                       "The assembled PowerPoint is inspection-only; outline peer review does not establish artifact or visual acceptance.")
     return result
 
 
@@ -1186,7 +1194,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot["provider"] == "ollama" and bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         # Use the same field types and bounds as post-generation validation.
                         call_options["response_schema"] = author_response_schema(
-                            mission.get("compose_presentation", False), None if mission.get("sections") else mission.get("expected_slide_count"))
+                            bool(mission.get("compose_presentation") or mission.get("sections")), None if mission.get("sections") else mission.get("expected_slide_count"))
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))
