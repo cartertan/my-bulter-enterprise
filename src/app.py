@@ -1540,7 +1540,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         records = [store.get("attachment", identifier) for identifier in dict.fromkeys(data.attachment_ids)]
         if any(item is None for item in records):
             raise HTTPException(404, "A selected attachment was not found.")
-        if sum(len(item["text"]) for item in records) > 12000:
+        design_id = data.template_id if (data.compose_presentation or (data.sections and data.duration_budget_seconds is not None)) else None
+        if sum(len(item["text"]) for item in records if item["id"] != design_id) > 12000:
             raise HTTPException(400, "Combined attachment text exceeds 12,000 characters. Split this mission.")
         if records and cloud and not data.attachment_cloud_consent:
             raise HTTPException(400, "Explicitly approve sharing these attachments with cloud providers.")
@@ -1549,6 +1550,12 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         if data.require_picture and not any(item["kind"] == "image" for item in records):
             raise HTTPException(400, "Upload and select an image before requiring a picture in the presentation.")
         attachments = [public_attachment(item) for item in records]
+        for item in attachments:
+            if item["id"] == design_id:
+                # A selected composition design supplies geometry/theme, not factual
+                # evidence. Keep original bytes/revision privately for the compositor.
+                item.update(text="", truncated=False,
+                            reference_scope="design_only; sample slide text excluded from generation and citation evidence")
         if data.attachment_mode != "reference" and not data.template_id:
             raise HTTPException(400, "Choose an Office source for this output mode.")
         if data.attachment_mode in {"reuse_design", "edit"} and len(bots) != 1 and not (len(bots) == 2 and data.review_criteria):

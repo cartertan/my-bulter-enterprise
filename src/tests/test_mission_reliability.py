@@ -1638,3 +1638,63 @@ def test_artifact_findings_drive_fresh_section_revision(tmp_path: Path, tamper: 
         assert final['section_artifact_sha256'] != review['section_artifact_sha256']
         assert client.get(f"/api/missions/{final['id']}/export/pptx").status_code == 200
         assert client.get(f"/api/missions/{review['id']}/export/pptx").status_code == 400
+
+
+@pytest.mark.parametrize('mode', ['sections', 'composition', 'design_only', 'reference'])
+def test_composition_design_is_not_research_evidence(tmp_path: Path, mode: str) -> None:
+    """Truncated design samples cannot crowd out or masquerade as research sources."""
+    import json
+    from src.tests.test_attachments import office
+    from src.app import draft_hash, revision_hash
+    app = create_app(tmp_path / 'design-scope.sqlite3', vault=tmp_path / 'empty')
+    calls = []
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        uploaded = client.post('/api/attachments?filename=design.pptx', content=office('pptx', 'Private sample marker'))
+        assert uploaded.status_code == 200
+        template_id = uploaded.json()['id']
+        record = app.state.store.get('attachment', template_id)
+        record.update(text='Private sample marker ' * 700, truncated=True)
+        app.state.store.put('attachment', record)
+        app.state.store.put('connector_evidence', {'id': 'research', 'content': 'Explicit consent',
+            'title': 'Synthetic official research', 'source': 'web', 'local_only': True, 'truncated': False})
+
+        async def stream(provider, model, system, messages, **kwargs):
+            content = messages[0]['content']
+            calls.append(content)
+            assert 'Private sample marker' not in content
+            assert 'design_only' in content
+            schema = kwargs['options']['response_schema']
+            if 'draft_hash' in schema['properties']:
+                yield json.dumps({'draft_hash': schema['properties']['draft_hash']['const'], 'criteria': [
+                    {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})
+            else:
+                outline = timed_outline(60, 0)
+                outline['slides'][0].update(flow_steps=['Consent', 'Issue'], claims=[{'text': 'Consent',
+                    'evidence': [{'source_id': 'research', 'quote': 'Explicit consent'}]}])
+                yield json.dumps(outline)
+
+        with patch('src.app.generate', stream):
+            options = {'sections': ['Consent']} if mode in {'sections', 'design_only'} else {'compose_presentation': True}
+            if mode == 'reference':
+                options = {}
+            response = client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [b['id'] for b in bots],
+                'attachment_ids': [template_id], **({'template_id': template_id} if mode != 'reference' else {}),
+                'evidence_ids': [] if mode == 'design_only' else ['research'],
+                'review_criteria': ['Consent'], 'duration_budget_seconds': 120, 'require_source_citations': True, **options})
+            if mode in {'design_only', 'reference'}:
+                assert response.status_code == 400 and not calls
+                return
+            assert response.status_code == 200, response.text
+            mission = wait_mission(client)
+        assert mission['status'] == 'completed'
+        assert mission['attachments'][0]['text'] == ''
+        assert mission['source_register'][0]['source_id'] == 'research' and len(mission['source_register']) == 1
+        assert mission['source_revisions']['attachment'][template_id] == revision_hash(record)
+        assert app.state.store.get('attachment', template_id) == record
+        assert mission['steps'][0]['source_check']['state'] == 'references_valid'
+        if mode == 'sections':
+            assert client.get(f"/api/missions/{mission['id']}/outline/pptx").status_code == 200
+        else:
+            assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 200
