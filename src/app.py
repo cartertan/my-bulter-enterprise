@@ -277,7 +277,7 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
         raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, unique slide IDs, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
 
 
-def author_response_schema(compose: bool, expected_slide_count: int | None = None) -> dict:
+def author_response_schema(compose: bool, expected_slide_count: int | None = None, source_ids: list[str] | None = None) -> dict:
     """Bound local author output to the selected layout without changing ordinary outlines."""
     schema = TimedPresentation.model_json_schema()
     if compose:
@@ -287,6 +287,13 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
         fields["flow_steps"]["items"]["maxLength"] = FLOW_LABEL_LIMIT
     if expected_slide_count is not None:
         schema["properties"]["slides"].update(minItems=expected_slide_count, maxItems=expected_slide_count)
+    if source_ids is not None:
+        if not source_ids:
+            raise ValueError("Required citations need at least one registered source.")
+        slide = schema["$defs"]["TimedSlide"]
+        slide["properties"]["claims"]["minItems"] = 1
+        slide["required"].append("claims")
+        schema["$defs"]["ClaimEvidence"]["properties"]["source_id"]["enum"] = list(dict.fromkeys(source_ids))
     return schema
 
 
@@ -1393,7 +1400,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot["provider"] == "ollama" and bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         # Use the same field types and bounds as post-generation validation.
                         call_options["response_schema"] = author_response_schema(
-                            bool(mission.get("compose_presentation") or mission.get("sections")), None if mission.get("sections") else mission.get("expected_slide_count"))
+                            bool(mission.get("compose_presentation") or mission.get("sections")), None if mission.get("sections") else mission.get("expected_slide_count"),
+                            [source["source_id"] for source in mission.get("source_register", [])] if mission.get("require_source_citations") else None)
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))

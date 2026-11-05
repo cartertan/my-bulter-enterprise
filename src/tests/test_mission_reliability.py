@@ -1670,6 +1670,9 @@ def test_composition_design_is_not_research_evidence(tmp_path: Path, mode: str) 
                 yield json.dumps({'draft_hash': schema['properties']['draft_hash']['const'], 'criteria': [
                     {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})
             else:
+                assert schema['$defs']['TimedSlide']['properties']['claims']['minItems'] == 1
+                assert 'claims' in schema['$defs']['TimedSlide']['required']
+                assert schema['$defs']['ClaimEvidence']['properties']['source_id']['enum'] == ['research']
                 outline = timed_outline(60, 0)
                 outline['slides'][0].update(flow_steps=['Consent', 'Issue'], claims=[{'text': 'Consent',
                     'evidence': [{'source_id': 'research', 'quote': 'Explicit consent'}]}])
@@ -1698,3 +1701,23 @@ def test_composition_design_is_not_research_evidence(tmp_path: Path, mode: str) 
             assert client.get(f"/api/missions/{mission['id']}/outline/pptx").status_code == 200
         else:
             assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 200
+
+
+@pytest.mark.parametrize('source_ids', [None, [], ['first'], ['first', 'second', 'first']])
+def test_local_author_citation_schema_requires_registered_sources(source_ids) -> None:
+    """Required evidence cannot be omitted in local structured author output."""
+    from src.app import author_response_schema, TimedPresentation
+    if source_ids == []:
+        with pytest.raises(ValueError, match='registered source'):
+            author_response_schema(True, source_ids=source_ids)
+        return
+    schema = author_response_schema(True, source_ids=source_ids)
+    slide = schema['$defs']['TimedSlide']
+    if source_ids is None:
+        assert 'claims' not in slide['required']
+        assert 'enum' not in schema['$defs']['ClaimEvidence']['properties']['source_id']
+    else:
+        assert slide['properties']['claims']['minItems'] == 1
+        assert 'claims' in slide['required']
+        assert schema['$defs']['ClaimEvidence']['properties']['source_id']['enum'] == list(dict.fromkeys(source_ids))
+    assert 'claims' not in TimedPresentation.model_json_schema()['$defs']['TimedSlide']['required']
