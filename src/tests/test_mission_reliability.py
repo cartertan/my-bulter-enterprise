@@ -1458,7 +1458,7 @@ def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fau
         assert app.state.store.get('mission', parent['id']) == parent
 
 
-@pytest.mark.parametrize('variant', ['pass', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
+@pytest.mark.parametrize('variant', ['pass', 'native_quote', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
 def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, variant: str) -> None:
     """Two independent reviews bind to retained bytes without promoting acceptance."""
     import json
@@ -1471,7 +1471,10 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
     with TestClient(app) as client:
         client.headers['x-bulter-token'] = app.state.csrf
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
-        output = json.dumps(timed_outline(60, 0))
+        outline = timed_outline(60, 0)
+        if variant == 'native_quote':
+            outline['slides'][0]['body'] = 'Explicit consent says "yes".'
+        output = json.dumps(outline)
         parent = {'id': 'source', 'status': 'completed', 'prompt': 'Review consent', 'sections': ['Consent'],
             'team': bots, 'cloud': False, 'duration_budget_seconds': 120, 'attachments': [],
             'review_criteria': ['Consent'], 'acceptance_status': 'not_assessed', 'source_revisions': {}, 'steps': [
@@ -1509,7 +1512,7 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
             digest = kwargs['options']['response_schema']['properties']['draft_hash']['const']
             yield json.dumps({'draft_hash': '0' * 64 if variant == 'wrong_hash' else digest,
                 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Independent review',
-                              'evidence_quotes': ['Explicit consent']}]})
+                              'evidence_quotes': ['Explicit consent says "yes".' if variant == 'native_quote' else 'Explicit consent']}]})
 
         with patch('src.app.generate', stream):
             response = client.post('/api/missions/source/review-section-artifact')
@@ -1808,3 +1811,23 @@ def test_source_diagnostics_locate_failure_without_echoing_reference_data(failur
     else:
         assert result['error'].startswith('Source references are unverified:')
     assert result['factual_accuracy'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('quote,valid', [('Say "yes" before issuing.', True), ('Line one\nLine two', True),
+                                         ('Line one Line two', False), ('Invented assertion', False)])
+def test_artifact_reviews_match_native_paragraphs_without_relaxing_draft_checks(quote: str, valid: bool) -> None:
+    """JSON escaping is transport syntax; artifact evidence must match native text exactly."""
+    import json
+    from src.app import draft_hash, section_review_paragraphs, validate_draft_review
+    text = json.dumps({'artifact_sha256': 'artifact', 'paragraphs': [
+        'Say "yes" before issuing.', 'Line one\nLine two']})
+    evidence = {'review_text': text, 'review_text_sha256': draft_hash(text), 'artifact_sha256': 'artifact'}
+    author = {'output': text, 'bulter_id': 'app', 'status': 'completed', 'section_id': 's', 'draft_revision': 1}
+    output = json.dumps({'draft_hash': draft_hash(text), 'criteria': [{'criterion_id': 'criterion-1',
+        'result': 'pass', 'reason': 'Checked', 'evidence_quotes': [quote]}]})
+    assert validate_draft_review(output, author, ['Check'], 'r')['state'] == 'invalid'
+    result = validate_draft_review(output, author, ['Check'], 'r', artifact_paragraphs=section_review_paragraphs(evidence))
+    assert result['state'] == ('criteria_pass' if valid else 'invalid')
+    evidence['artifact_sha256'] = 'changed'
+    with pytest.raises(ValueError, match='integrity'):
+        section_review_paragraphs(evidence)

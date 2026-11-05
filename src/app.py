@@ -517,7 +517,7 @@ def review_response_schema(criteria: list[str], reviewed_hash: str) -> dict:
     return schema
 
 
-def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str) -> dict:
+def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str, artifact_paragraphs: list[str] | None = None) -> dict:
     """Fail closed on malformed, stale, forged or incomplete model assessments."""
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
               "draft_hash": draft_hash(author["output"]), "section_id": author["section_id"],
@@ -546,11 +546,23 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
             return invalid("review_incomplete_draft", "A passing assessment cannot rely on an incomplete author draft.")
         if item.result == "pass" and not item.evidence_quotes:
             return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
-        if any(not quote.strip() or len(quote) > 2000 or quote not in author["output"] for quote in item.evidence_quotes):
+        if any(not quote.strip() or len(quote) > 2000 or (quote not in author["output"] and not any(quote in text for text in (artifact_paragraphs or []))) for quote in item.evidence_quotes):
             return invalid("review_evidence", "Review quotations must be nonempty, within the size limit and present exactly in the retained draft.")
     record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
                   criteria=[item.model_dump() for item in review.criteria])
     return record
+
+
+def section_review_paragraphs(evidence: dict) -> list[str]:
+    """Read native text only from the verified artifact projection; preserve all whitespace."""
+    projection = json.loads(evidence["review_text"], object_pairs_hook=unique_json_fields)
+    if (draft_hash(evidence["review_text"]) != evidence["review_text_sha256"]
+            or projection["artifact_sha256"] != evidence["artifact_sha256"]):
+        raise ValueError("Artifact review projection integrity mismatch.")
+    paragraphs = projection["paragraphs"]
+    if not isinstance(paragraphs, list) or any(not isinstance(p, str) for p in paragraphs):
+        raise ValueError("Artifact review paragraphs are invalid.")
+    return paragraphs
 
 
 def assemble_section_outline(mission: dict) -> dict:
@@ -1016,7 +1028,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     step["review"] = validate_draft_review(step["output"], {
                         "bulter_id": "application-section-assembly", "status": "completed",
                         "section_id": "assembled-artifact", "draft_revision": 1,
-                        "output": evidence["review_text"]}, mission["review_criteria"], bot["id"])
+                        "output": evidence["review_text"]}, mission["review_criteria"], bot["id"],
+                        artifact_paragraphs=section_review_paragraphs(evidence))
                     step["review"]["artifact_sha256"] = evidence["artifact_sha256"]
                     step["review_state"] = step["review"]["state"]
                     store.put("mission", mission)
@@ -1163,7 +1176,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     checked = validate_draft_review(step["output"], {
                         "bulter_id": "application-section-assembly", "status": "completed",
                         "section_id": "assembled-artifact", "draft_revision": 1,
-                        "output": evidence["review_text"]}, parent["review_criteria"], bot["id"])
+                        "output": evidence["review_text"]}, parent["review_criteria"], bot["id"],
+                        artifact_paragraphs=section_review_paragraphs(evidence))
                     if (checked["state"] != "criteria_pass"
                             or step.get("review", {}).get("artifact_sha256") != evidence["artifact_sha256"]):
                         raise ValueError("Both reviews must pass against the exact retained artifact.")
@@ -1865,7 +1879,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 assessment = validate_draft_review(step["output"], {
                     "bulter_id": "application-section-assembly", "status": "completed",
                     "section_id": "assembled-artifact", "draft_revision": 1,
-                    "output": evidence["review_text"]}, parent["review_criteria"], bot["id"])
+                    "output": evidence["review_text"]}, parent["review_criteria"], bot["id"],
+                        artifact_paragraphs=section_review_paragraphs(evidence))
                 if assessment["state"] == "invalid":
                     raise HTTPException(409, "An artifact assessment is invalid. Run artifact review again before revising.")
                 assessments.append(assessment)
