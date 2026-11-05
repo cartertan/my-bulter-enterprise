@@ -691,6 +691,8 @@ def test_fabricated_source_blocks_model_pass(tmp_path: Path) -> None:
             yield draft
         else:
             assert 'SOURCE REFERENCE CHECK' in calls[-1]
+            assert '"error_code": "source_unavailable"' in calls[-1]
+            assert '"citation_number": 1' in calls[-1]
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
                 'result': 'pass', 'reason': 'Model overlooked the fabricated source', 'evidence_quotes': ['Consent is required']}]})
 
@@ -1762,3 +1764,41 @@ def test_section_allocation_rechecks_distribution_despite_matching_total(actual:
     result = validate_section_timing(mission)
     assert result['state'] == ('pass' if actual == [1, 3] else 'invalid')
     assert [item['expected_slide_count'] for item in result['sections']] == [1, 3]
+
+
+@pytest.mark.parametrize('failure,code,positions', [
+    ('partial', 'source_incomplete', {}), ('malformed', 'source_outline', {}),
+    ('missing', 'source_missing_claims', {'slide_number': 2}),
+    ('unknown', 'source_unavailable', {'slide_number': 2, 'claim_number': 2, 'citation_number': 2}),
+    ('truncated', 'source_unavailable', {'slide_number': 2, 'claim_number': 2, 'citation_number': 2}),
+    ('quote', 'source_quote', {'slide_number': 2, 'claim_number': 2, 'citation_number': 2}),
+])
+def test_source_diagnostics_locate_failure_without_echoing_reference_data(failure: str, code: str, positions: dict) -> None:
+    """Revision gets a precise location and correction without exposing model payloads."""
+    import copy
+    import json
+    from src.app import validate_sources
+    marker = 'PRIVATE_DIAGNOSTIC_MARKER'
+    claim = {'text': marker, 'evidence': [{'source_id': 'valid', 'quote': 'Consent'}]}
+    outline = timed_outline(30, 0)
+    first = {**outline['slides'][0], 'claims': [copy.deepcopy(claim)]}
+    second = {**first, 'slide_id': marker, 'claims': [copy.deepcopy(claim), copy.deepcopy(claim)]}
+    second['claims'][1]['evidence'].append({'source_id': 'valid', 'quote': 'Consent'})
+    citation = second['claims'][1]['evidence'][1]
+    sources = [{'id': 'valid', 'content': 'Consent'}]
+    if failure == 'unknown':
+        citation['source_id'] = marker
+    elif failure == 'truncated':
+        citation['source_id'] = marker
+        sources.append({'id': marker, 'content': 'Consent', 'truncated': True})
+    elif failure == 'quote':
+        citation['quote'] = marker
+    elif failure == 'missing':
+        second['claims'] = []
+    outline['slides'] = [first, second]
+    output = marker if failure == 'malformed' else json.dumps(outline)
+    result = validate_sources(output, [], sources, failure != 'partial')
+    assert result['state'] == 'invalid' and result['error_code'] == code
+    assert {k: v for k, v in result.items() if k.endswith('_number')} == positions
+    assert marker not in json.dumps(result)
+    assert result['factual_accuracy'] == 'not_assessed'

@@ -457,19 +457,29 @@ def validate_sources(output: str, attachments: list[dict], evidence: list[dict],
     check = {"state": "invalid", "draft_hash": draft_hash(output), "factual_accuracy": "not_assessed"}
     texts = {item["id"]: item.get("text", "") for item in attachments if item.get("text")}
     texts.update({item["id"]: item.get("content", "") for item in evidence if item.get("content") and not item.get("truncated")})
+    def invalid(code: str, message: str, **positions: int) -> dict:
+        """Expose only bounded numeric positions, never untrusted source or draft text."""
+        return {**check, "error_code": code, "error": message, **positions}
+
+    if not complete:
+        return invalid("source_incomplete", "Source references are unverified: complete the author draft before checking citations.")
     try:
         draft = parse_presentation_outline(output)
-        if not complete or any(not slide.claims for slide in draft.slides):
-            raise ValueError("Incomplete claim coverage")
-        claims = [claim for slide in draft.slides for claim in slide.claims]
-        for claim in claims:
-            for citation in claim.evidence:
-                if citation.source_id not in texts or citation.quote not in texts[citation.source_id]:
-                    raise ValueError("Unknown source or invented quotation")
-        check.update(state="references_valid", claim_count=len(claims),
-                     source_ids=sorted({citation.source_id for claim in claims for citation in claim.evidence}))
     except (ValueError, TypeError):
-        check["error"] = "Source references are unverified: every slide needs claims linked to retained sources with exact quotations."
+        return invalid("source_outline", "Source references are unverified: repair the structured slide outline before checking citations.")
+    for slide_index, slide in enumerate(draft.slides, 1):
+        if not slide.claims:
+            return invalid("source_missing_claims", "Source references are unverified: add claims and exact retained-source quotations to the indicated slide.", slide_number=slide_index)
+        for claim_index, claim in enumerate(slide.claims, 1):
+            for citation_index, citation in enumerate(claim.evidence, 1):
+                positions = {"slide_number": slide_index, "claim_number": claim_index, "citation_number": citation_index}
+                if citation.source_id not in texts:
+                    return invalid("source_unavailable", "Source references are unverified: select a nontruncated retained source for the indicated citation.", **positions)
+                if citation.quote not in texts[citation.source_id]:
+                    return invalid("source_quote", "Source references are unverified: replace the indicated citation with an exact quotation from its selected source, preserving whitespace.", **positions)
+    claims = [claim for slide in draft.slides for claim in slide.claims]
+    check.update(state="references_valid", claim_count=len(claims),
+                 source_ids=sorted({citation.source_id for claim in claims for citation in claim.evidence}))
     return check
 
 
