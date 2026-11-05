@@ -64,7 +64,9 @@ def independent_text_check(pdf: Path, expected_pages: list[list[str]]) -> dict:
     if not extractor:
         return {'state': 'unavailable', 'reason': 'pdftotext_not_installed'}
     try:
-        result = subprocess.run([extractor, '-enc', 'UTF-8', '-layout', str(pdf), '-'],
+        # Content-stream order keeps a paragraph together when adjacent panels share rows.
+        # Primary geometric extraction remains authoritative for the report's warning state.
+        result = subprocess.run([extractor, '-enc', 'UTF-8', '-raw', str(pdf), '-'],
                                 check=True, capture_output=True, timeout=120)
         text = result.stdout.decode('utf-8', errors='strict')
         pages = text.split('\f')
@@ -73,7 +75,7 @@ def independent_text_check(pdf: Path, expected_pages: list[list[str]]) -> dict:
             pages.pop()
         if len(pages) != len(expected_pages):
             return {'state': 'unavailable', 'reason': 'page_count_mismatch'}
-        return {'state': 'complete', 'extractor': 'pdftotext',
+        return {'state': 'complete', 'extractor': 'pdftotext', 'ordering': 'content_stream',
                 'pages': [text_presence(expected, page) for expected, page in zip(expected_pages, pages)]}
     except (OSError, subprocess.SubprocessError, UnicodeError):
         # Secondary diagnostics must not hide or replace the original render report.

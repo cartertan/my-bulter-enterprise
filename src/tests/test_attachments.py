@@ -763,7 +763,7 @@ def test_independent_pdf_text_check_is_bounded_and_page_scoped(tmp_path: Path, m
     monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda name: None if variant == 'missing' else name)
 
     def run(command: list, **kwargs) -> SimpleNamespace:
-        assert command == ['pdftotext', '-enc', 'UTF-8', '-layout', str(tmp_path / 'artifact.pdf'), '-']
+        assert command == ['pdftotext', '-enc', 'UTF-8', '-raw', str(tmp_path / 'artifact.pdf'), '-']
         assert kwargs == {'check': True, 'capture_output': True, 'timeout': 120}
         if variant == 'timeout':
             raise subprocess.TimeoutExpired(command, 120)
@@ -1415,3 +1415,22 @@ def test_body_typography_respects_reserved_citation_panel(panel: bool) -> None:
     assert paragraph.font.size.pt == (20 if panel else 22)
     assert paragraph.line_spacing.pt == pytest.approx((20 if panel else 22) * 1.2)
     assert text.text == body  # No hidden truncation or content rewrite.
+
+
+def test_content_order_diagnostic_preserves_primary_interleaving_finding(tmp_path: Path, monkeypatch) -> None:
+    """Adjacent diagram text can split body sentences without omitting their glyphs."""
+    from types import SimpleNamespace
+    from scripts.render_presentation import independent_text_check, text_presence
+    expected = ['Holder stores credentials; verifier checks consent.']
+    primary = text_presence(expected, 'Holder stores credentials; Issue credential\nverifier checks consent. Verify proof')
+    monkeypatch.setattr('scripts.render_presentation.shutil.which', lambda _: 'pdftotext')
+
+    def extract(command: list, **kwargs) -> SimpleNamespace:
+        return SimpleNamespace(stdout=(b'Holder stores credentials;\nverifier checks consent.\nIssue credential\nVerify proof\f'
+                                       if '-raw' in command else b'Holder stores credentials; Issue credential\nverifier checks consent.\f'))
+
+    monkeypatch.setattr('scripts.render_presentation.subprocess.run', extract)
+    secondary = independent_text_check(tmp_path / 'panels.pdf', [expected])
+    assert secondary['ordering'] == 'content_stream'
+    assert secondary['pages'][0]['state'] == 'present'
+    assert primary['state'] == 'needs_review' and primary['missing_fragments'] == expected
