@@ -1458,11 +1458,11 @@ def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fau
         assert app.state.store.get('mission', parent['id']) == parent
 
 
-@pytest.mark.parametrize('variant', ['pass', 'native_quote', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
+@pytest.mark.parametrize('variant', ['pass', 'required_notes', 'native_quote', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
 def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, variant: str) -> None:
     """Two independent reviews bind to retained bytes without promoting acceptance."""
     import json
-    from src.app import draft_hash
+    from src.app import draft_hash, revision_hash
     app = create_app(tmp_path / 'section-reviews.sqlite3', vault=tmp_path / 'empty')
     calls = []
     import asyncio
@@ -1470,7 +1470,7 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
     entered = threading.Event()
     with TestClient(app) as client:
         client.headers['x-bulter-token'] = app.state.csrf
-        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        bots = [add_bot(client, 'Author', shared=variant == 'required_notes'), add_bot(client, 'Reviewer', shared=variant == 'required_notes')]
         outline = timed_outline(60, 0)
         if variant == 'native_quote':
             outline['slides'][0]['body'] = 'Explicit consent says "yes".'
@@ -1482,6 +1482,12 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
                 {'bulter_id': bots[1]['id'], 'section_id': 'section-1', 'status': 'completed', 'output': json.dumps({
                     'draft_hash': draft_hash(output), 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass',
                     'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})}]}
+        if variant == 'required_notes':
+            note = client.post('/api/memories', json={'title': 'Synthetic style preference',
+                'content': 'REQUIRED_ARTIFACT_PREFERENCE: distinguish evidence from assumptions.', 'category': 'preference'}).json()
+            client.post('/api/memories', json={'title': 'Consent demo', 'content': 'DEMO_ARTIFACT_NOTE', 'category': 'demo'})
+            parent['required_memory_ids'] = [note['id']]
+            parent['required_memory_revisions'] = {note['id']: revision_hash(note)}
         if variant == 'cloud':
             parent['team'] = [{**b, 'provider': 'openai'} for b in bots]
         elif variant == 'changed_bot':
@@ -1501,6 +1507,9 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
             calls.append(messages[0]['content'])
             assert provider == 'ollama' and 'api_key' not in kwargs
             assert 'application-section-assembly' not in messages[0]['content']
+            if variant == 'required_notes':
+                assert 'REQUIRED_ARTIFACT_PREFERENCE' in calls[-1]
+                assert 'DEMO_ARTIFACT_NOTE' not in calls[-1]
             if variant == 'cancel':
                 entered.set()
                 await asyncio.Event().wait()
@@ -1526,6 +1535,9 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
                 assert client.post('/api/missions/' + response.json()['id'] + '/stop').status_code == 200
             result = wait_mission(client)
         assert result['status'] == {'wrong_hash': 'completed_with_issues', 'provider_failure': 'failed', 'output_limit': 'failed', 'cancel': 'cancelled'}.get(variant, 'completed')
+        if variant == 'required_notes':
+            assert all(step['memory_ids'] == [note['id']] for step in result['steps'])
+            assert all(step['memory_revisions'] == parent['required_memory_revisions'] for step in result['steps'])
         assert result['acceptance_status'] == 'not_assessed'
         assert result['section_source_mission_id'] == 'source'
         assert app.state.store.get('mission', 'source') == parent
