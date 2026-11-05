@@ -1218,6 +1218,8 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
                 assert 'Required slide count across all 2 sections combined: exactly 2.' in content
                 assert 'Required total duration across all 2 sections combined: exactly 100 seconds' in content
                 assert kwargs['options']['response_schema']['properties']['slides']['minItems'] == 1
+                assert kwargs['options']['response_schema']['properties']['slides']['maxItems'] == 1
+                assert 'THIS SECTION ONLY: exactly 1 slides.' in content
             if phase['revision']:
                 assert 'combined_section_timing' in content and '"total_seconds": 140' in content
             drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else 60, 10))
@@ -1239,7 +1241,7 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         response = client.post('/api/missions', json={**template_options, 'prompt': 'Draft wallet sections',
             'bulter_ids': [bot['id'] for bot in bots], 'sections': ['Issue', 'Present'],
             'review_criteria': ['Include consent'], 'duration_budget_seconds': 100,
-            **({'expected_slide_count': 2, 'exact_duration_seconds': 100} if exact else {})})
+            **({'expected_slide_count': 2, 'exact_duration_seconds': 100, 'section_slide_counts': [1, 1]} if exact else {})})
         assert response.status_code == 200
         original = wait_mission(client)
         if recovery:
@@ -1721,3 +1723,42 @@ def test_local_author_citation_schema_requires_registered_sources(source_ids) ->
         assert 'claims' in slide['required']
         assert schema['$defs']['ClaimEvidence']['properties']['source_id']['enum'] == list(dict.fromkeys(source_ids))
     assert 'claims' not in TimedPresentation.model_json_schema()['$defs']['TimedSlide']['required']
+
+
+@pytest.mark.parametrize('overrides', [
+    {'sections': []}, {'duration_budget_seconds': None}, {'expected_slide_count': None},
+    {'section_slide_counts': [4]}, {'section_slide_counts': [1, 2]},
+    {'section_slide_counts': [0, 4]}, {'section_slide_counts': [True, 3]},
+    {'section_slide_counts': ['1', 3]}, {'section_slide_counts': [61, 1]},
+])
+def test_invalid_explicit_section_allocation_rejected(overrides: dict) -> None:
+    """Reject ambiguous allocations before any generation is scheduled."""
+    from pydantic import ValidationError
+    from src.app import MissionInput
+    data = dict(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
+                review_criteria=['Consent'], duration_budget_seconds=100,
+                expected_slide_count=4, section_slide_counts=[1, 3])
+    with pytest.raises(ValidationError):
+        MissionInput(**{**data, **overrides})
+
+
+@pytest.mark.parametrize('actual', [[1, 3], [2, 2], [3, 1]])
+def test_section_allocation_rechecks_distribution_despite_matching_total(actual: list[int]) -> None:
+    """Four total slides cannot conceal a wrong section allocation."""
+    import json
+    from src.app import MissionInput, validate_section_timing
+    request = MissionInput(prompt='Wallet', bulter_ids=['a', 'b'], sections=['Issue', 'Present'],
+                           review_criteria=['Consent'], duration_budget_seconds=100,
+                           expected_slide_count=4, section_slide_counts=[1, 3])
+    mission = request.model_dump()
+    mission['team'] = [{'id': 'a'}, {'id': 'b'}]
+    mission['steps'] = []
+    for index, count in enumerate(actual):
+        outline = timed_outline(10, 0)
+        outline['slides'] = [{**outline['slides'][0], 'slide_id': f'slide-{i}'} for i in range(count)]
+        mission['steps'].append({'bulter_id': 'a', 'section_id': f'section-{index + 1}',
+                                 'status': 'completed', 'output': json.dumps(outline),
+                                 'timing_check': {'state': 'pass'}})
+    result = validate_section_timing(mission)
+    assert result['state'] == ('pass' if actual == [1, 3] else 'invalid')
+    assert [item['expected_slide_count'] for item in result['sections']] == [1, 3]

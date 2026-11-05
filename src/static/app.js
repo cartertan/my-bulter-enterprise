@@ -550,6 +550,11 @@ $('#mission-form').addEventListener('submit', async (event) => {
     const timing = state.capabilities?.timing_validation && $('#duration-budget').value ? {duration_budget_seconds: Number($('#duration-budget').value) * 60} : {};
     const reviewCriteria = state.capabilities?.structured_review ? {review_criteria: $('#review-criteria').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
+    const allocation = state.capabilities?.section_checkpoints ? $('#section-slide-counts').value.trim() : '';
+    if (allocation) {
+      if (!/^\d+(\s*,\s*\d+)*$/.test(allocation)) throw new Error('Enter one positive slide count per section, separated by commas.');
+      sections.section_slide_counts = allocation.split(',').map(Number);
+    }
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
     const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...exactConstraints, ...sourceCitations, ...composition, ...pictures, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();

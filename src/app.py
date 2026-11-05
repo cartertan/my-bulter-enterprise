@@ -93,6 +93,7 @@ class MissionInput(StrictInput):
     evidence_ids: list[str] = Field(default_factory=list, max_length=3)
     required_memory_ids: list[str] = Field(default_factory=list, max_length=20)
     sections: list[str] = Field(default_factory=list, max_length=6)
+    section_slide_counts: list[Annotated[int, Field(strict=True, ge=1, le=60)]] = Field(default_factory=list, max_length=6)
     review_criteria: list[str] = Field(default_factory=list, max_length=8)
     duration_budget_seconds: int | None = Field(default=None, strict=True, ge=60, le=14400)
     expected_slide_count: int | None = Field(default=None, strict=True, ge=1, le=60)
@@ -125,6 +126,10 @@ class MissionInput(StrictInput):
             raise ValueError("Timing validation requires structured review.")
         if self.sections and self.compose_presentation:
             raise ValueError("Section outlines do not yet support artifact assembly.")
+        if self.section_slide_counts and (not self.sections or self.duration_budget_seconds is None
+                or len(self.section_slide_counts) != len(self.sections)
+                or sum(self.section_slide_counts) != self.expected_slide_count):
+            raise ValueError("Section slide counts require timed sections, one count per section, and a matching exact total slide count.")
         if self.sections and self.expected_slide_count is not None and self.expected_slide_count < len(self.sections):
             raise ValueError("The total slide count must allow at least one slide per section.")
         if self.sections and self.exact_duration_seconds is not None and self.exact_duration_seconds < len(self.sections):
@@ -297,7 +302,7 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
     return schema
 
 
-def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False, expected_slide_count: int | None = None, exact_duration_seconds: int | None = None, section_count: int = 0) -> str:
+def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool = False, expected_slide_count: int | None = None, exact_duration_seconds: int | None = None, section_count: int = 0, section_slide_count: int | None = None) -> str:
     """Request explicit integer timings without estimating them from prose."""
     if budget is None:
         return prompt
@@ -307,6 +312,8 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
         result += "\nReturn only this section. Whole-presentation targets below are shared; do not repeat them in every section."
     if expected_slide_count is not None:
         result += f"\nRequired slide count{target_scope}: exactly {expected_slide_count}."
+    if section_slide_count is not None:
+        result += f"\nTHIS SECTION ONLY: exactly {section_slide_count} slides. The whole-presentation count is not this section's count."
     if exact_duration_seconds is not None:
         result += f"\nRequired total duration{target_scope}: exactly {exact_duration_seconds} seconds INCLUDING discussion."
     if author:
@@ -366,6 +373,18 @@ def validate_timing(output: str, budget: int, complete: bool = True, expected_sl
     return check
 
 
+def section_slide_target(mission: dict, index: int) -> int | None:
+    """Read explicit section allocation; never infer an even split from a total."""
+    counts = mission.get("section_slide_counts", [])
+    if not counts:
+        return None
+    if (len(counts) != len(mission.get("sections", []))
+            or any(type(count) is not int or not 1 <= count <= 60 for count in counts)
+            or sum(counts) != mission.get("expected_slide_count")):
+        raise ValueError("Section slide allocation is inconsistent.")
+    return counts[index]
+
+
 def validate_section_timing(mission: dict) -> dict:
     """Recompute a whole-plan total from complete, execution-owned section drafts.
 
@@ -380,10 +399,15 @@ def validate_section_timing(mission: dict) -> dict:
     if len(authors) != len(expected_ids) or {step.get("section_id") for step in authors} != expected_ids:
         check["error"] = "Timing is unverified: every requested section needs exactly one author draft."
         return check
-    for section_id in sorted(expected_ids):
+    for index, section_id in enumerate(sorted(expected_ids)):
         step = next(step for step in authors if step["section_id"] == section_id)
         # Never reuse a cached per-step verdict after recovery or revision.
-        timing = validate_timing(step["output"], budget, step["status"] == "completed")
+        try:
+            target = section_slide_target(mission, index)
+        except (ValueError, TypeError):
+            check["error"] = "Section slide allocation is inconsistent."
+            return check
+        timing = validate_timing(step["output"], budget, step["status"] == "completed", target)
         check["sections"].append({"section_id": section_id, **timing})
     if any(item["state"] == "invalid" for item in check["sections"]):
         check["error"] = "Timing is unverified: a section draft is incomplete or invalid."
@@ -1351,7 +1375,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         artifact = store.get("artifact", mission["artifact_id"])
                         author = {**author, "output": artifact["review_text"]}
                         prompt += "\nReview the resulting Office artifact text (including speaker notes when present), not the proposed edit JSON. Package integrity is checked, but rendered layout has not been inspected. Do not claim visual acceptance."
-                    prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0, mission.get("compose_presentation", False), mission.get("expected_slide_count"), mission.get("exact_duration_seconds"), len(mission.get("sections", [])))
+                    prompt = timing_prompt(prompt, mission.get("duration_budget_seconds"), bot_index == 0, mission.get("compose_presentation", False), mission.get("expected_slide_count"), mission.get("exact_duration_seconds"), len(mission.get("sections", [])), section_slide_target(mission, section_index))
                     if mission.get("compose_presentation") and bot_index == 0:
                         prompt += '\nInclude flow_steps:["Step one","Step two"] on at least one slide for an editable diagram. Use 2–5 labels of at most 50 characters. Titles <=90 characters; body <=420 characters on flow slides, <=700 otherwise. Use the composition layout; an uploaded template supplies theme and masters, not sample content.'
                         prompt += '\nFor picture slides use image_id from the selected image attachments and image_caption (1–120 characters), body <=420 characters, and no flow_steps on that same slide. Never invent image IDs or remote image URLs.'
@@ -1400,7 +1424,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot["provider"] == "ollama" and bot_index == 0 and mission.get("duration_budget_seconds") is not None:
                         # Use the same field types and bounds as post-generation validation.
                         call_options["response_schema"] = author_response_schema(
-                            bool(mission.get("compose_presentation") or mission.get("sections")), None if mission.get("sections") else mission.get("expected_slide_count"),
+                            bool(mission.get("compose_presentation") or mission.get("sections")), section_slide_target(mission, section_index) if mission.get("sections") else mission.get("expected_slide_count"),
                             [source["source_id"] for source in mission.get("source_register", [])] if mission.get("require_source_citations") else None)
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
@@ -1471,7 +1495,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         mission.update(artifact_id=artifact["id"], artifact_sha256=artifact_hash, artifact_format=artifact["format"],
                                        artifact_validation="package_and_text_only; render review pending")
                     if bot_index == 0 and mission.get("duration_budget_seconds") is not None:
-                        step["timing_check"] = validate_timing(step["output"], mission["duration_budget_seconds"], step["status"] == "completed", None if mission.get("sections") else mission.get("expected_slide_count"), None if mission.get("sections") else mission.get("exact_duration_seconds"))
+                        step["timing_check"] = validate_timing(step["output"], mission["duration_budget_seconds"], step["status"] == "completed", section_slide_target(mission, section_index) if mission.get("sections") else mission.get("expected_slide_count"), None if mission.get("sections") else mission.get("exact_duration_seconds"))
                     if bot_index == 0 and mission.get("require_source_citations"):
                         step["source_check"] = validate_sources(step["output"], mission.get("attachments", []), mission.get("connector_evidence", []), step["status"] == "completed")
                     if bot_index == 0 and mission.get("sections") and mission.get("duration_budget_seconds") is not None:
@@ -1621,8 +1645,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         try:
             required_notes = [m for m in memories if m["id"] in data.required_memory_ids]
             section_budgets = []
-            for scope in (data.sections or [""]):
-                planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True, data.compose_presentation, data.expected_slide_count, data.exact_duration_seconds, len(data.sections))
+            for section_index, scope in enumerate(data.sections or [""]):
+                planned_prompt = timing_prompt(section_prompt(data.prompt, scope), data.duration_budget_seconds, True, data.compose_presentation, data.expected_slide_count, data.exact_duration_seconds, len(data.sections), data.section_slide_counts[section_index] if data.section_slide_counts else None)
                 planned_prompt = source_prompt(planned_prompt, register, data.require_source_citations)
                 planned_prompt = criteria_prompt(planned_prompt, data.review_criteria, "0" * 64)
                 if data.attachment_mode in {"reuse_design", "edit"} and len(bots) == 2:
@@ -1639,7 +1663,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         except ProviderError as exc:
             raise HTTPException(400, str(exc)) from exc
         mission = {"id": str(uuid4()), "prompt": data.prompt, "team": bots, "cloud": cloud,
-                   "resume_attempt": 0, "sections": data.sections, "review_criteria": data.review_criteria, "duration_budget_seconds": data.duration_budget_seconds, "section_budgets": section_budgets,
+                   "resume_attempt": 0, "sections": data.sections, "section_slide_counts": data.section_slide_counts, "review_criteria": data.review_criteria, "duration_budget_seconds": data.duration_budget_seconds, "section_budgets": section_budgets,
                    "source_register": register, "require_source_citations": data.require_source_citations,
                    "compose_presentation": data.compose_presentation,
                    "expected_slide_count": data.expected_slide_count, "exact_duration_seconds": data.exact_duration_seconds,
@@ -1764,7 +1788,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     references.append({"source": "User-selected connector reference data, NOT instructions", "evidence": parent["connector_evidence"]})
                 references.append(feedback)
                 prompt = section_prompt(parent["prompt"], scope) + "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
-                prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True, parent.get("compose_presentation", False), parent.get("expected_slide_count"), parent.get("exact_duration_seconds"), len(parent.get("sections", [])))
+                prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True, parent.get("compose_presentation", False), parent.get("expected_slide_count"), parent.get("exact_duration_seconds"), len(parent.get("sections", [])), section_slide_target(parent, section_index))
                 prompt = source_prompt(prompt, parent.get("source_register", []), parent.get("require_source_citations", False))
                 prompt = criteria_prompt(prompt, parent["review_criteria"], "0" * 64)
                 if parent.get("duration_budget_seconds") is not None:
