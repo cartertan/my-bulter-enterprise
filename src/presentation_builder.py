@@ -16,6 +16,7 @@ from lxml import etree as ET
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_AUTO_SIZE
 from pptx.util import Inches, Pt
 from pptx.shapes.autoshape import Shape
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
@@ -74,6 +75,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         """Reject explicit line overflow; wrapping still requires rendered validation."""
         frame = shape.text_frame
         frame.word_wrap = True
+        frame.auto_size = MSO_AUTO_SIZE.NONE
         frame.margin_left = frame.margin_right = Inches(.05 * x_scale)
         frame.margin_top = frame.margin_bottom = Inches(.05 * y_scale)
         font_points = size * font_scale
@@ -86,7 +88,8 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         frame.text = text.replace('\r\n', '\n').replace('\r', '\n')
         for paragraph in frame.paragraphs:
             paragraph.space_before = paragraph.space_after = Pt(0)
-            paragraph.line_spacing = 1.2
+            # Percentage spacing depends on font metrics and exceeded the reserved panel in renders.
+            paragraph.line_spacing = Pt(font_points * 1.2)
             paragraph.font.name = font_name
             paragraph.font.size = Pt(font_points)
             paragraph.font.color.rgb = RGBColor.from_string(color)
@@ -124,7 +127,7 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         header.fill.fore_color.rgb = RGBColor.from_string(navy)
         header.line.fill.background()
         textbox(slide, .65, .2, 12, .9, item['title'], 28, 'FFFFFF')
-        textbox(slide, .7, 1.65, 5.4 if flow or image_id else 11.8, 4.1, item['body'], 22, ink)
+        textbox(slide, .7, 1.65, 5.4 if flow or image_id else 11.8, 4.1, item['body'], 20 if flow or image_id else 22, ink)
         image_note = ''
         if image_id:
             asset = images[image_id]

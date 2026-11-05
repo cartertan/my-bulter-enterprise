@@ -674,7 +674,7 @@ def test_composition_four_citations_use_explicit_spacing() -> None:
     assert len(labels) == 1 and len(labels[0].text_frame.paragraphs) == 4
     for paragraph in labels[0].text_frame.paragraphs:
         assert paragraph.space_after.pt == 0 and paragraph.space_before.pt == 0
-        assert paragraph.line_spacing == 1.2
+        assert paragraph.line_spacing.pt == 12
     assert any(shape.has_text_frame and shape.text == 'Consent\nIssue' for shape in deck.slides[0].shapes)
 
 
@@ -1393,3 +1393,25 @@ def test_render_font_inputs_reject_before_output(tmp_path: Path, monkeypatch, pr
         render_presentation(source, hashlib.sha256(source.read_bytes()).hexdigest(), tmp_path / 'output',
                             config, None if problem == 'unpaired' else fonts)
     assert not (tmp_path / 'output').exists()
+
+
+@pytest.mark.parametrize('panel', [False, True])
+def test_body_typography_respects_reserved_citation_panel(panel: bool) -> None:
+    """Avoid font-metric line inflation and shape growth into the citation panel."""
+    from pptx.enum.text import MSO_AUTO_SIZE
+    from src.presentation_builder import compose_presentation
+    body = 'Synthetic credential issuance and verification. ' * 8
+    slide = {'title': 'Wallet', 'body': body, 'speaker_notes': 'Test', 'duration_seconds': 60,
+             'flow_steps': ['Consent', 'Issue'] if panel else [],
+             'claims': [{'evidence': [{'source_id': 's', 'quote': 'Evidence'}]}]}
+    deck = Presentation(io.BytesIO(compose_presentation({'slides': [slide], 'discussion_seconds': 0},
+                        [{'source_id': 's', 'title': 'Reference'}])))
+    shapes = [shape for shape in deck.slides[0].shapes if shape.has_text_frame]
+    text = next(shape for shape in shapes if shape.text == body)
+    source = next(shape for shape in shapes if shape.text == 'S1: Reference')
+    assert text.text_frame.auto_size == MSO_AUTO_SIZE.NONE
+    assert text.top + text.height < source.top
+    paragraph = text.text_frame.paragraphs[0]
+    assert paragraph.font.size.pt == (20 if panel else 22)
+    assert paragraph.line_spacing.pt == pytest.approx((20 if panel else 22) * 1.2)
+    assert text.text == body  # No hidden truncation or content rewrite.
