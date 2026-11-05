@@ -1458,7 +1458,7 @@ def test_section_layout_failure_blocks_peer_pass_and_revises(tmp_path: Path, fau
         assert app.state.store.get('mission', parent['id']) == parent
 
 
-@pytest.mark.parametrize('variant', ['pass', 'required_notes', 'native_quote', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
+@pytest.mark.parametrize('variant', ['pass', 'source_text', 'source_text_overflow', 'required_notes', 'native_quote', 'wrong_hash', 'provider_failure', 'output_limit', 'cancel', 'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit', 'export_hash', 'export_projection', 'export_identity', 'export_partial', 'export_missing', 'export_criteria', 'export_raw_review', 'export_bytes'])
 def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, variant: str) -> None:
     """Two independent reviews bind to retained bytes without promoting acceptance."""
     import json
@@ -1482,6 +1482,8 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
                 {'bulter_id': bots[1]['id'], 'section_id': 'section-1', 'status': 'completed', 'output': json.dumps({
                     'draft_hash': draft_hash(output), 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass',
                     'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})}]}
+        if variant in {'source_text', 'source_text_overflow'}:
+            parent['connector_evidence'] = [{'id': 'research', 'content': 'SOURCE_TEXT_MARKER ' + ('x' * 25000 if variant == 'source_text_overflow' else 'Consent is required.'), 'truncated': False}]
         if variant == 'required_notes':
             note = client.post('/api/memories', json={'title': 'Synthetic style preference',
                 'content': 'REQUIRED_ARTIFACT_PREFERENCE: distinguish evidence from assumptions.', 'category': 'preference'}).json()
@@ -1507,6 +1509,8 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
             calls.append(messages[0]['content'])
             assert provider == 'ollama' and 'api_key' not in kwargs
             assert 'application-section-assembly' not in messages[0]['content']
+            if variant == 'source_text':
+                assert 'SOURCE_TEXT_MARKER' in calls[-1] and 'Excerpts are partial evidence' in calls[-1]
             if variant == 'required_notes':
                 assert 'REQUIRED_ARTIFACT_PREFERENCE' in calls[-1]
                 assert 'DEMO_ARTIFACT_NOTE' not in calls[-1]
@@ -1525,7 +1529,7 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
 
         with patch('src.app.generate', stream):
             response = client.post('/api/missions/source/review-section-artifact')
-            if variant in {'cloud', 'changed_bot', 'changed_source', 'context', 'revoked_memory', 'attempt_limit'}:
+            if variant in {'cloud', 'changed_bot', 'changed_source', 'context', 'source_text_overflow', 'revoked_memory', 'attempt_limit'}:
                 assert response.status_code in {400, 409}
                 assert not calls and len(app.state.store.all('mission')) == (4 if variant == 'attempt_limit' else 1)
                 return
@@ -1874,3 +1878,15 @@ def test_selected_memory_is_revalidated_between_model_calls(tmp_path: Path, requ
         assert 'Selected memory changed or permission was revoked' in mission['error']
         assert mission['steps'][0]['status'] == 'completed'
         assert mission['acceptance_status'] == 'not_assessed'
+
+
+def test_artifact_source_context_excludes_design_and_binary_data() -> None:
+    """Keep selected source text verbatim and source boundaries visible to reviewers."""
+    from src.app import artifact_source_texts
+    mission = {'template_id': 'design', 'attachments': [
+        {'id': 'design', 'text': 'DESIGN_SAMPLE'},
+        {'id': 'source', 'text': 'Quoted\n  text', 'raw': 'BINARY_SECRET', 'truncated': True}],
+        'connector_evidence': [{'id': 'web', 'content': 'Verified excerpt', 'reference_scope': 'excerpt_only'}]}
+    sources = artifact_source_texts(mission)
+    assert sources == [{'source_id': 'source', 'kind': 'attachment', 'text': 'Quoted\n  text', 'truncated': True, 'scope': 'Selected source only'},
+                       {'source_id': 'web', 'kind': 'connector', 'text': 'Verified excerpt', 'truncated': False, 'scope': 'excerpt_only'}]
