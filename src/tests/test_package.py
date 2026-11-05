@@ -71,3 +71,34 @@ def test_invalid_screenshot_rejected(tmp_path: Path) -> None:
         path.write_bytes(b"Synthetic source\n")
     with pytest.raises(ValueError, match="Invalid or oversized screenshot"):
         collect(tmp_path)
+
+
+def test_allowlisted_source_bootstraps_without_workspace_state(tmp_path: Path) -> None:
+    """An extracted source tree must serve the console without importing the original repo."""
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[2]
+    for name, data in collect(root).items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    # Isolated Python excludes user site/PYTHONPATH; dependencies use the active environment.
+    code = '''
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))
+import src.app
+from fastapi.testclient import TestClient
+assert Path(src.app.__file__).resolve().is_relative_to(Path.cwd())
+app = src.app.create_app(Path.cwd() / 'private-test' / 'test.sqlite3', vault=Path.cwd() / 'empty-vault')
+with TestClient(app) as client:
+    assert client.get('/').status_code == 200
+    assert client.get('/static/app.js').status_code == 200
+    client.headers['x-bulter-token'] = app.state.csrf
+    state = client.get('/api/state')
+    assert state.status_code == 200
+    assert state.json()['missions'] == []
+'''
+    result = subprocess.run([sys.executable, '-I', '-c', code], cwd=tmp_path,
+                            capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
