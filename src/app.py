@@ -459,7 +459,10 @@ def validate_sources(output: str, attachments: list[dict], evidence: list[dict],
     texts.update({item["id"]: item.get("content", "") for item in evidence if item.get("content") and not item.get("truncated")})
     def invalid(code: str, message: str, **positions: int) -> dict:
         """Expose only bounded numeric positions, never untrusted source or draft text."""
-        return {**check, "error_code": code, "error": message, **positions}
+        # The dashboard displays the error text; include positions there as well as JSON.
+        location = ", ".join(f"{key.removesuffix('_number')} {value}" for key, value in positions.items())
+        detail = f"{location.capitalize()}: {message}" if location else message
+        return {**check, "error_code": code, "error": detail, **positions}
 
     if not complete:
         return invalid("source_incomplete", "Source references are unverified: complete the author draft before checking citations.")

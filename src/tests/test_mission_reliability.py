@@ -1801,4 +1801,10 @@ def test_source_diagnostics_locate_failure_without_echoing_reference_data(failur
     assert result['state'] == 'invalid' and result['error_code'] == code
     assert {k: v for k, v in result.items() if k.endswith('_number')} == positions
     assert marker not in json.dumps(result)
+    if positions:
+        assert result['error'].startswith('Slide 2')
+        if 'citation_number' in positions:
+            assert 'claim 2, citation 2:' in result['error']
+    else:
+        assert result['error'].startswith('Source references are unverified:')
     assert result['factual_accuracy'] == 'not_assessed'
