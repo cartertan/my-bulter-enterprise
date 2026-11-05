@@ -1831,3 +1831,34 @@ def test_artifact_reviews_match_native_paragraphs_without_relaxing_draft_checks(
     evidence['artifact_sha256'] = 'changed'
     with pytest.raises(ValueError, match='integrity'):
         section_review_paragraphs(evidence)
+
+
+@pytest.mark.parametrize('required', [False, True])
+@pytest.mark.parametrize('change', ['content', 'revoked', 'owner'])
+def test_selected_memory_is_revalidated_between_model_calls(tmp_path: Path, required: bool, change: str) -> None:
+    """A persisted note edit cannot leave a later call using a stale authorized snapshot."""
+    app = create_app(tmp_path / 'memory-race.sqlite3', vault=tmp_path / 'empty')
+    calls = []
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author', shared=True), add_bot(client, 'Reviewer', shared=True)]
+        note = client.post('/api/memories', json={'title': 'Wallet preference',
+            'content': 'SYNTHETIC_SELECTED_NOTE: use clear wallet diagrams.', 'category': 'preference'}).json()
+
+        async def stream(provider, model, system, messages, **kwargs):
+            calls.append(messages[0]['content'])
+            assert 'SYNTHETIC_SELECTED_NOTE' in calls[-1]
+            update = {'content': 'Changed content'} if change == 'content' else {'active': False} if change == 'revoked' else {'owner_id': bots[0]['id']}
+            app.state.store.put('memory', {**app.state.store.get('memory', note['id']), **update})
+            yield 'Wallet draft'
+
+        with patch('src.app.generate', stream):
+            response = client.post('/api/missions', json={'prompt': 'Review wallet preference',
+                'bulter_ids': [b['id'] for b in bots], 'required_memory_ids': [note['id']] if required else []})
+            assert response.status_code == 200
+            mission = wait_mission(client)
+        assert len(calls) == 1
+        assert mission['status'] == 'failed'
+        assert 'Selected memory changed or permission was revoked' in mission['error']
+        assert mission['steps'][0]['status'] == 'completed'
+        assert mission['acceptance_status'] == 'not_assessed'

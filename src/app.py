@@ -1425,6 +1425,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         handoffs.append({"name": retained["name"], "output": retained_output, "status": "completed"})
                         continue
                     notes = select_memory(memories, bot, cloud, prompt, handoffs, mission.get("required_memory_ids"))
+                    # The mission snapshot is stable, but permission or content may change between calls.
+                    permitted = {note["id"]: revision_hash(note)
+                                 for note in eligible_memory(store.all("memory"), bot, cloud)}
+                    if any(permitted.get(note["id"]) != revision_hash(note) for note in notes):
+                        raise ProviderError("Selected memory changed or permission was revoked before generation. Start a new mission after reviewing the notes.")
                     step = {"bulter_id": bot["id"], "name": bot["name"], "provider": bot["provider"],
                             "model": bot["model"], "memory_ids": [m["id"] for m in notes], "output": "", "status": "running"}
                     step.update(section_id=f"section-{section_index + 1}", section_scope=scope,
