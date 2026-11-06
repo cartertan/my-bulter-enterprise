@@ -1481,7 +1481,7 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
                 {'bulter_id': bots[0]['id'], 'section_id': 'section-1', 'draft_revision': 1, 'status': 'completed', 'output': output},
                 {'bulter_id': bots[1]['id'], 'section_id': 'section-1', 'status': 'completed', 'output': json.dumps({
                     'draft_hash': draft_hash(output), 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass',
-                    'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})}]}
+                    'reason': 'Consent', 'evidence_quotes': ['Explicit consent says "yes".' if variant == 'native_quote' else 'Explicit consent']}]})}]}
         if variant in {'source_text', 'source_text_overflow'}:
             parent['connector_evidence'] = [{'id': 'research', 'content': 'SOURCE_TEXT_MARKER ' + ('x' * 25000 if variant == 'source_text_overflow' else 'Consent is required.'), 'truncated': False}]
         if variant == 'required_notes':
@@ -1890,3 +1890,35 @@ def test_artifact_source_context_excludes_design_and_binary_data() -> None:
     sources = artifact_source_texts(mission)
     assert sources == [{'source_id': 'source', 'kind': 'attachment', 'text': 'Quoted\n  text', 'truncated': True, 'scope': 'Selected source only'},
                        {'source_id': 'web', 'kind': 'connector', 'text': 'Verified excerpt', 'truncated': False, 'scope': 'excerpt_only'}]
+
+
+@pytest.mark.parametrize('bad_quote', ['PRIVATE_BAD_QUOTE', ' exact evidence ', 'exact  evidence'])
+def test_review_evidence_failure_identifies_criterion_and_quote_without_payload(bad_quote: str) -> None:
+    """Reordered criteria still identify the correct user criterion and failed quotation."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    author = {'output': 'exact evidence', 'bulter_id': 'a', 'section_id': 's', 'draft_revision': 1, 'status': 'completed'}
+    output = json.dumps({'draft_hash': draft_hash(author['output']), 'criteria': [
+        {'criterion_id': 'criterion-2', 'result': 'pass', 'reason': 'Check', 'evidence_quotes': ['exact evidence', bad_quote]},
+        {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Check', 'evidence_quotes': ['exact evidence']}]})
+    result = validate_draft_review(output, author, ['First', 'Second'], 'r')
+    assert result['state'] == 'invalid' and result['error_code'] == 'review_evidence'
+    assert result['criterion_number'] == 2 and result['quotation_number'] == 2
+    assert result['error'].startswith('Criterion 2, quotation 2:')
+    assert bad_quote not in json.dumps(result)
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_outline_review_matches_native_citation_text_without_normalizing(changed: bool) -> None:
+    """A multiline source quote in a validated outline is retained draft content."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    quote = 'Issuer\nsaid "consent" is required.'
+    outline = timed_outline(60, 0)
+    outline['slides'][0]['claims'] = [{'text': 'Consent required', 'evidence': [{'source_id': 's', 'quote': quote}]}]
+    raw = json.dumps(outline)
+    author = {'output': raw, 'bulter_id': 'a', 'section_id': 's', 'draft_revision': 1, 'status': 'completed'}
+    assessment = json.dumps({'draft_hash': draft_hash(raw), 'criteria': [{'criterion_id': 'criterion-1',
+        'result': 'pass', 'reason': 'Evidence exists', 'evidence_quotes': [quote.replace('\n', ' ') if changed else quote]}]})
+    result = validate_draft_review(assessment, author, ['Consent'], 'r')
+    assert result['state'] == ('invalid' if changed else 'criteria_pass')

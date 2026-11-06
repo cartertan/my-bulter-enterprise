@@ -517,14 +517,29 @@ def review_response_schema(criteria: list[str], reviewed_hash: str) -> dict:
     return schema
 
 
+def timed_review_texts(output: str) -> list[str]:
+    """Decode only validated outline text fields; JSON escaping is not presentation content."""
+    try:
+        outline = parse_presentation_outline(output)
+    except (ValueError, TypeError):
+        return []
+    texts = []
+    for slide in outline.slides:
+        texts.extend([slide.title, slide.body, slide.speaker_notes, slide.image_caption or "", *slide.flow_steps])
+        for claim in slide.claims:
+            texts.append(claim.text)
+            texts.extend(citation.quote for citation in claim.evidence)
+    return texts
+
+
 def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str, artifact_paragraphs: list[str] | None = None) -> dict:
     """Fail closed on malformed, stale, forged or incomplete model assessments."""
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
               "draft_hash": draft_hash(author["output"]), "section_id": author["section_id"],
               "draft_revision": author["draft_revision"], "state": "invalid", "criteria": []}
-    def invalid(code: str, message: str) -> dict:
+    def invalid(code: str, message: str, **positions: int) -> dict:
         """Return actionable diagnostics without echoing model payloads or parser details."""
-        return {**record, "error_code": code, "error": message}
+        return {**record, "error_code": code, "error": message, **positions}
 
     try:
         payload = json.loads(output, object_pairs_hook=unique_json_fields)
@@ -541,13 +556,18 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
         return invalid("review_draft_hash", "Review refers to the wrong draft hash. Use the exact review hash supplied for this artifact revision.")
     if len(review.criteria) != len(expected) or {item.criterion_id for item in review.criteria} != expected:
         return invalid("review_criteria", "Review must assess every requested criterion exactly once using the supplied criterion IDs.")
+    native_texts = artifact_paragraphs if artifact_paragraphs is not None else timed_review_texts(author["output"])
     for item in review.criteria:
         if item.result == "pass" and author["status"] != "completed":
             return invalid("review_incomplete_draft", "A passing assessment cannot rely on an incomplete author draft.")
         if item.result == "pass" and not item.evidence_quotes:
             return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
-        if any(not quote.strip() or len(quote) > 2000 or (quote not in author["output"] and not any(quote in text for text in (artifact_paragraphs or []))) for quote in item.evidence_quotes):
-            return invalid("review_evidence", "Review quotations must be nonempty, within the size limit and present exactly in the retained draft.")
+        for quote_number, quote in enumerate(item.evidence_quotes, 1):
+            if not quote.strip() or len(quote) > 2000 or (quote not in author["output"] and not any(quote in text for text in native_texts)):
+                # Criterion IDs were checked above; expose positions, never generated quotation text.
+                criterion_number = int(item.criterion_id.split("-")[1])
+                return invalid("review_evidence", f"Criterion {criterion_number}, quotation {quote_number}: evidence must be nonempty, within the size limit and present exactly in the retained draft. Copy a supported quotation without paraphrasing or changing whitespace.",
+                               criterion_number=criterion_number, quotation_number=quote_number)
     record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
                   criteria=[item.model_dump() for item in review.criteria])
     return record
