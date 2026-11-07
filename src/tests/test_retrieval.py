@@ -6,7 +6,7 @@ Assumptions: No providers or personal files are accessed.
 import json
 
 import pytest
-from src.app import select_memory, build_context, plan_handoff_budgets, bounded_output
+from src.app import select_memory, build_context, plan_handoff_budgets, bounded_output, output_budget_prompt
 from src.providers import ProviderError
 
 BOT = {"id": "a", "name": "Test", "role": "Review", "instructions": "", "shared_memory": True}
@@ -38,7 +38,7 @@ def test_compact_handoff_allocation_matches_actual_review_context() -> None:
     draft, exceeded = bounded_output('"\n\\é' * 5000, budget)
     assert exceeded
     handoffs = references + [{"name": BOT["name"], "output": draft, "status": "partial"}]
-    system, messages = build_context(BOT, [], prompt, handoffs)
+    system, messages = build_context(BOT, [], output_budget_prompt(prompt, budget), handoffs)
     total = len(system) + len(messages[0]["content"])
     assert 2048 <= 24000 - total <= 2053
     payload = json.loads(messages[0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])

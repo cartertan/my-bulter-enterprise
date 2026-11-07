@@ -16,6 +16,32 @@ from src.providers import OutputLimitError, ProviderError, parse_event, request_
 from src.tests.test_app import add_bot, wait_mission
 
 
+def test_allowance_is_visible_and_retained_before_first_output(tmp_path: Path) -> None:
+    """Even an empty provider response retains the allowance supplied to the model."""
+    app = create_app(tmp_path / "empty.sqlite3")
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Record the request but yield no text, without contacting any provider."""
+        calls.append(messages[0]["content"])
+        if False:
+            yield ""
+
+    with TestClient(app) as client, patch("src.app.generate", stream):
+        client.headers["x-bulter-token"] = app.state.csrf
+        bots = [add_bot(client, "Author"), add_bot(client, "Reviewer")]
+        assert client.post("/api/missions", json={"prompt": "Write a complete draft",
+            "bulter_ids": [bot["id"] for bot in bots]}).status_code == 200
+        result = wait_mission(client)
+        assert len(calls) == 1
+        assert result["status"] == "failed"
+        assert result["acceptance_status"] == "not_assessed"
+        step = result["steps"][0]
+        assert step["output"] == ""
+        assert step["handoff_budget"] == result["handoff_budgets"][0]
+        assert f"OUTPUT ALLOWANCE: at most {step['handoff_budget']} JSON-escaped characters" in calls[0]
+
+
 @pytest.mark.parametrize("opt_in", [False, True])
 def test_output_limit_review_is_explicit(tmp_path: Path, opt_in: bool) -> None:
     """A reviewer sees flagged partial text only after explicit opt-in."""
@@ -43,6 +69,9 @@ def test_output_limit_review_is_explicit(tmp_path: Path, opt_in: bool) -> None:
         assert result["steps"][0]["error_code"] == "output_limit"
         assert result["status"] == ("completed_with_issues" if opt_in else "failed")
         assert len(calls) == (2 if opt_in else 1)
+        for step, (_, messages) in zip(result["steps"], calls):
+            assert f"OUTPUT ALLOWANCE: at most {step['handoff_budget']} JSON-escaped characters" in messages[0]["content"]
+            assert "Preserve required evidence and fields" in messages[0]["content"]
         if opt_in:
             reference = json.loads(calls[1][1][0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])
             assert reference["previous_bulter_outputs"][-1]["status"] == "partial"

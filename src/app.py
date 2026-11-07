@@ -676,6 +676,13 @@ def build_context(bot: dict, memories: list[dict], prompt: str, handoffs: list[d
     return system, [{"role": "user", "content": content}]
 
 
+def output_budget_prompt(prompt: str, budget: int) -> str:
+    """Tell the model its enforced output allowance without relaxing completeness."""
+    return (prompt + f"\nOUTPUT ALLOWANCE: at most {budget} JSON-escaped characters, not tokens. "
+            "Return a concise complete response within this allowance. Preserve required evidence and fields; "
+            "avoid optional repetition. Never claim omitted work is complete.")
+
+
 def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
                          required_notes: list[dict] | None = None) -> list[int]:
     """Reserve serialized draft space for every later reviewer before inference.
@@ -687,7 +694,9 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
     for index, bot in enumerate(bots):
         placeholders = [{"name": previous["name"], "output": "", "status": "partial"}
                         for previous in bots[:index]]
-        system, messages = build_context(bot, required_notes or [], prompt, references + placeholders)
+        # Reserve the longest supported allowance message before allocating draft space.
+        system, messages = build_context(bot, required_notes or [], output_budget_prompt(prompt, 16000),
+                                         references + placeholders)
         if not index:
             continue
         available = 24000 - len(system) - len(messages[0]["content"]) - 2048
@@ -1463,6 +1472,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             retained_output = store.get("artifact", mission["artifact_id"])["review_text"]
                         handoffs.append({"name": retained["name"], "output": retained_output, "status": "completed"})
                         continue
+                    budget = (mission["section_budgets"][section_index] if mission.get("section_budgets")
+                              else mission["handoff_budgets"])[bot_index]
+                    prompt = output_budget_prompt(prompt, budget)
                     notes = select_memory(memories, bot, cloud, prompt, handoffs, mission.get("required_memory_ids"))
                     # The mission snapshot is stable, but permission or content may change between calls.
                     permitted = {note["id"]: revision_hash(note)
@@ -1470,7 +1482,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if any(permitted.get(note["id"]) != revision_hash(note) for note in notes):
                         raise ProviderError("Selected memory changed or permission was revoked before generation. Start a new mission after reviewing the notes.")
                     step = {"bulter_id": bot["id"], "name": bot["name"], "provider": bot["provider"],
-                            "model": bot["model"], "memory_ids": [m["id"] for m in notes], "output": "", "status": "running"}
+                            "model": bot["model"], "memory_ids": [m["id"] for m in notes], "output": "", "status": "running",
+                            "handoff_budget": budget}
                     step.update(section_id=f"section-{section_index + 1}", section_scope=scope,
                                 draft_revision=mission.get("resume_attempt", 0) + 1,
                                 source_revision=revision_hash(mission["source_revisions"]), review_state="not_assessed")
@@ -1503,8 +1516,6 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     try:
                         async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=call_options, **auth)) as stream:
                             async for chunk in stream:
-                                budget = (mission["section_budgets"][section_index] if mission.get("section_budgets")
-                                          else mission["handoff_budgets"])[bot_index]
                                 step["output"], exceeded = bounded_output(step["output"] + chunk, budget)
                                 step["handoff_budget"] = budget
                                 store.put("mission", mission)
