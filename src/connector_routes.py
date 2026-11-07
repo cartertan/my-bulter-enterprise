@@ -8,6 +8,7 @@ import asyncio
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from src.connectors import Connectors, ConnectorError, text_field
+from src.attachments import citation_target_allowed
 
 
 async def body(request: Request, fields: set[str]) -> dict:
@@ -90,11 +91,44 @@ def install_connector_routes(app: FastAPI, connectors: Connectors) -> None:
         async with connectors.lock:
             return await connectors.browser_snapshot()
 
+    @app.post("/api/connectors/web/read")
+    async def read_public_page(request: Request) -> dict:
+        """Fetch only a URL the user explicitly submits, without model tool access."""
+        from src.web_evidence import fetch_public_page
+        from src.connectors import timestamp
+        data = await body(request, {"url", "excerpt"})
+        url = text_field(data, "url", 2048)
+        excerpt = text_field(data, "excerpt", 6000, False)
+        async with connectors.lock:
+            try:
+                page = await asyncio.to_thread(fetch_public_page, url)
+            except ValueError as exc:
+                raise ConnectorError(str(exc)) from None
+            if excerpt and excerpt not in page["text"]:
+                raise ConnectorError("The exact excerpt was not found in the retrieved static text. No evidence was saved.")
+            record = connectors.evidence("web", "Retrieved public page excerpt" if excerpt else "Retrieved public page", excerpt or page["text"])
+            record.update(source_url=page["source_url"], retrieved_at=timestamp(),
+                          provenance="public_https_fetch; static_text_only", scope=page["scope"],
+                          retrieved_bytes=page["retrieved_bytes"], requested_url=page.get("requested_url", url),
+                          redirects=page.get("redirects", []))
+            if excerpt:
+                import hashlib
+                start = page["text"].index(excerpt)
+                record.update(scope="user-selected exact excerpt of retrieved static text; not the whole page",
+                              excerpt_start=start, excerpt_end=start + len(excerpt),
+                              page_text_length=len(page["text"]),
+                              page_text_sha256=hashlib.sha256(page["text"].encode()).hexdigest())
+            return connectors.store.put("connector_evidence", record)
+
     @app.post("/api/connectors/manual")
     async def manual(request: Request) -> dict:
         """Record only the excerpt the user explicitly pasted for analysis."""
-        data = await body(request, {"text"})
-        return connectors.evidence("manual", "User-provided excerpt", text_field(data, "text", 6000))
+        data = await body(request, {"text", "title", "source_url"})
+        title = text_field(data, "title", 160, False) or "User-provided excerpt"
+        source_url = text_field(data, "source_url", 2048, False)
+        if source_url and not citation_target_allowed(source_url):
+            raise ConnectorError("Use a public HTTPS source URL without credentials or a custom port. The page is not fetched.")
+        return connectors.evidence("manual", title, text_field(data, "text", 6000), source_url=source_url or None)
 
     @app.post("/api/connectors/actions/prepare")
     async def prepare(request: Request) -> dict:
