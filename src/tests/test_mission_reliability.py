@@ -1296,6 +1296,10 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
         assert child['status'] == 'completed' and child['section_timing_check']['total_seconds'] == 100
         assert child['section_timing_check']['state'] == 'pass'
         assert child['acceptance_status'] == 'not_assessed'
+        for index, (step, content) in enumerate(zip(child['steps'], calls[-4:], strict=True)):
+            allocation = child['section_budgets'][index // 2][index % 2]
+            assert step['handoff_budget'] == allocation
+            assert f'OUTPUT ALLOWANCE: at most {allocation} JSON-escaped characters' in content
         assembled = client.get(f"/api/missions/{child['id']}/outline")
         assert assembled.status_code == 200 and assembled.headers['cache-control'] == 'no-store'
         import hashlib
