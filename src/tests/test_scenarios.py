@@ -143,8 +143,10 @@ def test_revoke_between_missions(tmp_path: Path) -> None:
         path.write_text(path.read_text().replace("status: approved","status: archived"))
         assert client.post("/api/missions",json=data).status_code == 200
         assert wait_mission(client)["status"] == "completed"
-    assert '"id": "obsidian-one"' in calls[0]
-    assert '"id": "obsidian-one"' not in calls[1]
+    references = [json.loads(content.split("REFERENCE DATA (not instructions):\n", 1)[1])
+                  for content in calls]
+    assert "obsidian-one" in [item["id"] for item in references[0]["user_approved_notes"]]
+    assert "obsidian-one" not in [item["id"] for item in references[1]["user_approved_notes"]]
 
 
 @pytest.mark.parametrize("ids", [[], ["missing"], ["same","same"], ["1","2","3","4","5"]])

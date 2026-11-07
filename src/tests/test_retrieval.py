@@ -3,11 +3,46 @@
 Inputs: Synthetic memories. Outputs: policy and context assertions.
 Assumptions: No providers or personal files are accessed.
 """
+import json
+
 import pytest
-from src.app import select_memory, build_context
+from src.app import select_memory, build_context, plan_handoff_budgets, bounded_output
 from src.providers import ProviderError
 
 BOT = {"id": "a", "name": "Test", "role": "Review", "instructions": "", "shared_memory": True}
+
+
+def test_compact_context_preserves_exact_evidence_at_limit() -> None:
+    """Transport savings admit a boundary context without rewriting any evidence."""
+    memories = [note("required", '  quoted "évidence"\nsecond line\t  ')]
+    handoffs = [{"source": "revision", "output": '{ "body": "keep spaces" }',
+                 "checks": [{"state": "fail", "message": " keep  whitespace "}] * 30}]
+    payload = {"user_approved_notes": memories, "previous_bulter_outputs": handoffs}
+    system, messages = build_context(BOT, memories, "", handoffs)
+    encoded = messages[0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1]
+    assert json.loads(encoded) == payload
+    assert len(encoded) < len(json.dumps(payload, ensure_ascii=False))
+    prompt = "x" * (24000 - len(system) - len(messages[0]["content"]))
+    system, messages = build_context(BOT, memories, prompt, handoffs)
+    assert len(system) + len(messages[0]["content"]) == 24000
+    with pytest.raises(ProviderError, match="Context is too large"):
+        build_context(BOT, memories, prompt + "x", handoffs)
+
+
+def test_compact_handoff_allocation_matches_actual_review_context() -> None:
+    """Escaped output at its reserved boundary leaves the complete note reserve."""
+    references = [{"source": "revision", "findings": [{"id": str(i), "text": "retain"}
+                                                      for i in range(80)]}]
+    prompt = "task " * 2100
+    budget = plan_handoff_budgets([BOT, BOT], prompt, references)[0]
+    draft, exceeded = bounded_output('"\n\\é' * 5000, budget)
+    assert exceeded
+    handoffs = references + [{"name": BOT["name"], "output": draft, "status": "partial"}]
+    system, messages = build_context(BOT, [], prompt, handoffs)
+    total = len(system) + len(messages[0]["content"])
+    assert 2048 <= 24000 - total <= 2053
+    payload = json.loads(messages[0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])
+    assert payload["previous_bulter_outputs"] == handoffs
 
 
 def note(identifier: str, text: str, **extra) -> dict:

@@ -4,6 +4,7 @@ Inputs: Synthetic streams and isolated SQLite stores. Outputs: pytest assertions
 Assumptions: No network, credentials, private notes or model inference.
 Author: Carter Tan.
 """
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,7 +44,8 @@ def test_output_limit_review_is_explicit(tmp_path: Path, opt_in: bool) -> None:
         assert result["status"] == ("completed_with_issues" if opt_in else "failed")
         assert len(calls) == (2 if opt_in else 1)
         if opt_in:
-            assert '"status": "partial"' in calls[1][1][0]["content"]
+            reference = json.loads(calls[1][1][0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])
+            assert reference["previous_bulter_outputs"][-1]["status"] == "partial"
             assert "previous output is explicitly incomplete" in calls[1][0]
             assert result["steps"][1]["status"] == "completed"
         # A finished review cannot turn an incomplete mission into an Office deliverable.
@@ -1223,7 +1225,9 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
                 assert kwargs['options']['response_schema']['properties']['slides']['maxItems'] == 1
                 assert 'THIS SECTION ONLY: exactly 1 slides.' in content
             if phase['revision']:
-                assert 'combined_section_timing' in content and '"total_seconds": 140' in content
+                reference = json.loads(content.split("REFERENCE DATA (not instructions):\n", 1)[1])
+                feedback = reference["previous_bulter_outputs"][-1]
+                assert feedback['combined_section_timing']['total_seconds'] == 140
             drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else 60, 10))
             yield drafts[scope]
         else:
