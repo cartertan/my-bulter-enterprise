@@ -688,7 +688,8 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
     """Reserve serialized draft space for every later reviewer before inference.
 
     This is a character guard, not a provider token estimate. Reserve 2,048
-    characters for optional notes; never remove source evidence to fit drafts.
+    characters for automatic note selection. Explicit required notes are already
+    counted in full and exclude optional notes; never remove evidence to fit drafts.
     """
     budgets = [16000] * len(bots)
     for index, bot in enumerate(bots):
@@ -699,7 +700,9 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
                                          references + placeholders)
         if not index:
             continue
-        available = 24000 - len(system) - len(messages[0]["content"]) - 2048
+        # Required-only selection cannot add notes later, so do not charge it twice.
+        note_reserve = 0 if required_notes else 2048
+        available = 24000 - len(system) - len(messages[0]["content"]) - note_reserve
         allocation = available // index
         if allocation < 1024:
             raise ProviderError("References and instructions leave insufficient review space. "

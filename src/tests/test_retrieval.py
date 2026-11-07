@@ -45,6 +45,29 @@ def test_compact_handoff_allocation_matches_actual_review_context() -> None:
     assert payload["previous_bulter_outputs"] == handoffs
 
 
+@pytest.mark.parametrize("team_size", [2, 4])
+def test_required_only_notes_are_counted_once_in_review_budget(team_size: int) -> None:
+    """Fixed approved notes fit alongside full reserved outputs without optional slack."""
+    required = [note("required", 'Preserve "quotes" and\nline breaks.', category="preference")]
+    prompt = "Task " * 2100
+    bots = [{**BOT, "name": f"Bot {index}"} for index in range(team_size)]
+    budgets = plan_handoff_budgets(bots, prompt, [], required)
+    reviewer = bots[-1]
+    placeholders = [{"name": bot["name"], "output": "", "status": "partial"} for bot in bots[:-1]]
+    system, messages = build_context(reviewer, required, output_budget_prompt(prompt, 16000), placeholders)
+    available = 24000 - len(system) - len(messages[0]["content"])
+    assert budgets[0] == min(16000, available // (team_size - 1))
+    handoffs = [{**item, "output": "x" * budgets[index]} for index, item in enumerate(placeholders)]
+    selected = select_memory(required + [note("extra", "Task " * 300)], reviewer, False,
+                             output_budget_prompt(prompt, budgets[-1]), handoffs, ["required"])
+    assert selected == required
+    system, messages = build_context(reviewer, selected, output_budget_prompt(prompt, budgets[-1]), handoffs)
+    assert len(system) + len(messages[0]["content"]) <= 24000
+    payload = json.loads(messages[0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])
+    assert payload["user_approved_notes"] == required
+    assert payload["previous_bulter_outputs"] == handoffs
+
+
 def note(identifier: str, text: str, **extra) -> dict:
     """Create a synthetic approved local memory."""
     return {"id": identifier, "title": identifier, "content": text, "active": True,
