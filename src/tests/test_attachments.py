@@ -625,7 +625,8 @@ def test_picture_composition_rejects_invalid_assets(problem: str) -> None:
         compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [], images=assets)
 
 
-def test_required_picture_missing_upload_rejected_before_inference(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("sections", [False, True])
+def test_required_picture_missing_upload_rejected_before_inference(tmp_path: Path, monkeypatch, sections: bool) -> None:
     """A required picture cannot be promised without a selected uploaded asset."""
     from src.tests.test_app import add_bot
     from unittest.mock import Mock
@@ -637,7 +638,7 @@ def test_required_picture_missing_upload_rejected_before_inference(tmp_path: Pat
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
         response = client.post('/api/missions', json={'prompt': 'Compose', 'bulter_ids': [b['id'] for b in bots],
             'review_criteria': ['Check flow'], 'duration_budget_seconds': 1800,
-            'compose_presentation': True, 'require_picture': True})
+            **({'sections': ['Consent']} if sections else {'compose_presentation': True}), 'require_picture': True})
         assert response.status_code == 400
         generate_mock.assert_not_called()
 

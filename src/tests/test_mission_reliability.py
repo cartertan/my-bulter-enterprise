@@ -2084,3 +2084,58 @@ def test_artifact_quote_grammar_preserves_evidence_without_forcing_pass(paragrap
     else:
         assert 'enum' not in quotes['items']
     assert 'enum' not in review_response_schema(['Check'], 'a' * 64)['$defs']['CriterionReview']['properties']['evidence_quotes']['items']
+
+
+def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
+    """Passing peers cannot override missing combined pictures; one section suffices."""
+    import io
+    from PIL import Image
+    from src.app import draft_hash, assemble_section_outline
+    app = create_app(tmp_path / 'section-pictures.sqlite3')
+    state = {'revision': False, 'draft': '', 'authors': 0, 'image_id': ''}
+
+    async def vision(bots):
+        return None
+
+    async def stream(provider, model, system, messages, **kwargs):
+        if 'draft_hash' in kwargs['options']['response_schema']['properties']:
+            yield json.dumps({'draft_hash': draft_hash(state['draft']), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Consent is present',
+                 'evidence_quotes': ['Explicit consent']}]})
+        else:
+            assert 'combined deck requires at least one selected uploaded picture' in messages[0]['content']
+            outline = timed_outline(60, 0)
+            state['authors'] += 1
+            if state['revision']:
+                assert 'combined_section_pictures' in messages[0]['content']
+                if state['authors'] % 2:
+                    outline['slides'][0].update(image_id=state['image_id'], image_caption='Synthetic illustration', flow_steps=[])
+            state['draft'] = json.dumps(outline)
+            yield state['draft']
+
+    with TestClient(app) as client, patch('src.app.generate', stream), patch('src.app.require_vision', vision):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        photo = io.BytesIO()
+        Image.new('RGB', (200, 100), 'blue').save(photo, format='PNG')
+        uploaded = client.post('/api/attachments?filename=synthetic.png', content=photo.getvalue()).json()
+        state['image_id'] = uploaded['id']
+        response = client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [b['id'] for b in bots],
+            'sections': ['Consent', 'Issue'], 'review_criteria': ['Consent'], 'duration_budget_seconds': 120,
+            'require_picture': True, 'attachment_ids': [uploaded['id']]})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert parent['status'] == 'completed_with_issues'
+        assert parent['section_picture_check']['state'] == 'invalid'
+        assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
+        # Assembly recomputes from drafts rather than trusting saved status.
+        with pytest.raises(ValueError, match='uploaded picture'):
+            assemble_section_outline({**parent, 'status': 'completed', 'section_picture_check': {'state': 'pass'}})
+        state['revision'] = True
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['require_picture'] is True and child['section_picture_check']['state'] == 'pass'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
+        assert app.state.store.get('mission', parent['id']) == parent
