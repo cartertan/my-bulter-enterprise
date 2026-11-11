@@ -2002,3 +2002,59 @@ def test_outline_review_matches_native_citation_text_without_normalizing(changed
         'result': 'pass', 'reason': 'Evidence exists', 'evidence_quotes': [quote.replace('\n', ' ') if changed else quote]}]})
     result = validate_draft_review(assessment, author, ['Consent'], 'r')
     assert result['state'] == ('invalid' if changed else 'criteria_pass')
+
+
+@pytest.mark.parametrize('overrides', [
+    {'expected_slide_count': None}, {'exact_duration_seconds': 61},
+    {'slide_duration_seconds': True}, {'slide_duration_seconds': 0},
+    {'slide_duration_seconds': 3601}, {'duration_budget_seconds': None},
+])
+def test_uniform_timing_requires_explicit_consistent_targets(overrides: dict) -> None:
+    """Reject ambiguous or infeasible uniform timing before execution."""
+    from pydantic import ValidationError
+    from src.app import MissionInput
+    request = dict(prompt='Wallet', bulter_ids=['a', 'b'], review_criteria=['Consent'],
+                   duration_budget_seconds=60, expected_slide_count=2,
+                   exact_duration_seconds=60, slide_duration_seconds=30)
+    with pytest.raises(ValidationError):
+        MissionInput(**{**request, **overrides})
+
+
+@pytest.mark.parametrize('durations,discussion,valid', [([30, 30], 0, True), ([20, 40], 0, False), ([25, 25], 10, False)])
+@pytest.mark.parametrize('sections', [False, True])
+def test_uniform_timing_checks_values_even_when_total_matches(tmp_path: Path, durations: list[int], discussion: int, valid: bool, sections: bool) -> None:
+    """Matching total and reviewer agreement cannot conceal incorrect slide timings."""
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'uniform.sqlite3')
+    outline = timed_outline(durations[0], discussion)
+    outline['slides'].append({**outline['slides'][0], 'slide_id': 'slide-2', 'duration_seconds': durations[1]})
+    draft = json.dumps(outline)
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Deliberately ignore the grammar to exercise independent post-validation."""
+        schema = kwargs['options']['response_schema']
+        assert 'Every slide must declare exactly 30 seconds' in messages[0]['content']
+        if 'draft_hash' in schema['properties']:
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+                'result': 'pass', 'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})
+        else:
+            assert schema['$defs']['TimedSlide']['properties']['duration_seconds']['const'] == 30
+            assert schema['properties']['discussion_seconds']['const'] == 0
+            yield draft
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        request = dict(prompt='Wallet', bulter_ids=[bot['id'] for bot in bots], review_criteria=['Consent'],
+                       duration_budget_seconds=60, expected_slide_count=2, exact_duration_seconds=60,
+                       slide_duration_seconds=30)
+        if sections:
+            request.update(sections=['Wallet flow'], section_slide_counts=[2])
+        assert client.post('/api/missions', json=request).status_code == 200
+        mission = wait_mission(client)
+        assert mission['slide_duration_seconds'] == 30
+        assert mission['steps'][0]['timing_check']['state'] == ('pass' if valid else 'invalid')
+        assert mission['status'] == ('completed' if valid else 'completed_with_issues')
+        if sections:
+            assert mission['section_timing_check']['state'] == ('pass' if valid else 'invalid')
+        assert mission['acceptance_status'] == 'not_assessed'

@@ -399,6 +399,7 @@ function renderDetail() {
       block.append(el('p', 'help', `Timing: ${check.state} · ${check.total_seconds ?? 'unverified'} / ${check.budget_seconds} seconds including discussion`));
       if (check.expected_slide_count != null) block.append(el('p', 'help', `Slides: ${check.slide_count ?? 'unverified'}; required exactly ${check.expected_slide_count}.`));
       if (check.exact_duration_seconds != null) block.append(el('p', 'help', `Required total: exactly ${check.exact_duration_seconds} seconds including discussion.`));
+      if (check.slide_duration_seconds != null) block.append(el('p', 'help', `Required per slide: ${check.slide_duration_seconds} seconds, with zero discussion time.`));
       if (check.error) block.append(el('p', 'error', check.error));
     }
     if (step.review) {
@@ -546,7 +547,8 @@ $('#mission-form').addEventListener('submit', async (event) => {
     const sourceCitations = state.capabilities?.source_citations && $('#require-source-citations').checked ? {require_source_citations: true} : {};
     const exactConstraints = state.capabilities?.exact_presentation_constraints ? {
       ...($('#expected-slide-count').value ? {expected_slide_count: Number($('#expected-slide-count').value)} : {}),
-      ...($('#exact-duration').value ? {exact_duration_seconds: Number($('#exact-duration').value)} : {})} : {};
+      ...($('#exact-duration').value ? {exact_duration_seconds: Number($('#exact-duration').value)} : {}),
+      ...($('#slide-duration').value ? {slide_duration_seconds: Number($('#slide-duration').value)} : {})} : {};
     const timing = state.capabilities?.timing_validation && $('#duration-budget').value ? {duration_budget_seconds: Number($('#duration-budget').value) * 60} : {};
     const reviewCriteria = state.capabilities?.structured_review ? {review_criteria: $('#review-criteria').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
     const sections = state.capabilities?.section_checkpoints ? {sections: $('#mission-sections').value.split('\n').map(s => s.trim()).filter(Boolean)} : {};
