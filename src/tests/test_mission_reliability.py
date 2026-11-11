@@ -1223,10 +1223,10 @@ def test_combined_section_timing_recomputes_complete_owned_drafts(variant: str) 
 
 
 @pytest.mark.parametrize('recovery', [False, True])
-@pytest.mark.parametrize('exact', [False, True])
+@pytest.mark.parametrize('exact,initial_seconds', [(False, 60), (True, 60), (True, 20)])
 @pytest.mark.parametrize('template', [False, True])
-def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool, exact: bool, template: bool) -> None:
-    """Individual passes cannot hide aggregate overrun; explicit revision can fix it."""
+def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: bool, exact: bool, template: bool, initial_seconds: int) -> None:
+    """Peer passes cannot hide aggregate overrun or shortfall; revisions preserve history."""
     import json
     from src.app import draft_hash
     app = create_app(tmp_path / 'combined-timing.sqlite3')
@@ -1261,8 +1261,8 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
             if phase['revision']:
                 reference = json.loads(content.split("REFERENCE DATA (not instructions):\n", 1)[1])
                 feedback = reference["previous_bulter_outputs"][-1]
-                assert feedback['combined_section_timing']['total_seconds'] == 140
-            drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else 60, 10))
+                assert feedback['combined_section_timing']['total_seconds'] == 2 * (initial_seconds + 10)
+            drafts[scope] = json.dumps(timed_outline(40 if phase['revision'] else initial_seconds, 10))
             yield drafts[scope]
         else:
             yield json.dumps({'draft_hash': draft_hash(drafts[scope]), 'criteria': [
@@ -1291,7 +1291,7 @@ def test_section_timing_overrun_revision_and_recovery(tmp_path: Path, recovery: 
             original = wait_mission(client)
             assert len(calls) == 5  # One failed call, with the completed first pair reused.
         assert original['status'] == 'completed_with_issues'
-        assert original['section_timing_check']['total_seconds'] == 140
+        assert original['section_timing_check']['total_seconds'] == 2 * (initial_seconds + 10)
         assert original['section_timing_check']['state'] == ('invalid' if exact else 'exceeded')
         assert all(step['review_state'] == 'criteria_pass' for step in original['steps'][1::2])
         phase['revision'] = True
