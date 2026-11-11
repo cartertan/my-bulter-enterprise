@@ -703,8 +703,9 @@ def test_source_reference_validation_is_evidence_bound(variant: str) -> None:
     assert check['factual_accuracy'] == 'not_assessed'
 
 
-def test_fabricated_source_blocks_model_pass(tmp_path: Path) -> None:
-    """A passing reviewer cannot override an invented author source identifier."""
+@pytest.mark.parametrize('failure', ['source_unavailable', 'source_quote'])
+def test_fabricated_source_blocks_model_pass(tmp_path: Path, failure: str) -> None:
+    """A reviewer pass cannot validate invented IDs or paraphrased quotations."""
     import json
     from src.app import draft_hash
     app = create_app(tmp_path / 'sources.sqlite3')
@@ -722,7 +723,7 @@ def test_fabricated_source_blocks_model_pass(tmp_path: Path) -> None:
             yield draft
         else:
             assert 'SOURCE REFERENCE CHECK' in calls[-1]
-            assert '"error_code": "source_unavailable"' in calls[-1]
+            assert f'"error_code": "{failure}"' in calls[-1]
             assert '"citation_number": 1' in calls[-1]
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
                 'result': 'pass', 'reason': 'Model overlooked the fabricated source', 'evidence_quotes': ['Consent is required']}]})
@@ -731,6 +732,10 @@ def test_fabricated_source_blocks_model_pass(tmp_path: Path) -> None:
         client.headers['x-bulter-token'] = app.state.csrf
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
         source = client.post('/api/attachments?filename=source.txt', content=b'Issuance requires explicit consent.').json()
+        if failure == 'source_quote':
+            outline['slides'][0]['claims'][0]['evidence'] = [
+                {'source_id': source['id'], 'quote': 'Issuance needs explicit consent.'}]
+            draft = json.dumps(outline)
         response = client.post('/api/missions', json={'prompt': 'Prepare a sourced presentation',
             'bulter_ids': [b['id'] for b in bots], 'attachment_ids': [source['id']],
             'duration_budget_seconds': 1800, 'review_criteria': ['Use supported claims'], 'require_source_citations': True})
