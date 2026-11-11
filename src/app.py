@@ -538,13 +538,18 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
     return result
 
 
-def review_response_schema(criteria: list[str], reviewed_hash: str) -> dict:
+def review_response_schema(criteria: list[str], reviewed_hash: str, artifact_paragraphs: list[str] | None = None) -> dict:
     """Constrain local reviewer syntax while retaining independent semantic validation."""
     schema = DraftReview.model_json_schema()
     schema["properties"]["draft_hash"]["const"] = reviewed_hash
     schema["properties"]["criteria"].update(minItems=len(criteria), maxItems=len(criteria))
     schema["$defs"]["CriterionReview"]["properties"]["criterion_id"]["enum"] = [
         f"criterion-{index + 1}" for index in range(len(criteria))]
+    if artifact_paragraphs:
+        # Bound grammar size; keep the full artifact in context and verify the verdict separately.
+        quotes = list(dict.fromkeys(text for text in artifact_paragraphs if text.strip()))
+        if quotes and all(len(text) <= 2000 for text in quotes) and sum(map(len, quotes)) <= 6000:
+            schema['$defs']['CriterionReview']['properties']['evidence_quotes']['items']['enum'] = quotes
     return schema
 
 
@@ -1097,7 +1102,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     store.put("mission", mission)
                     options = dict(bot)
                     if bot["provider"] == "ollama":
-                        options["response_schema"] = review_response_schema(mission["review_criteria"], evidence["review_text_sha256"])
+                        options["response_schema"] = review_response_schema(mission["review_criteria"], evidence["review_text_sha256"],
+                                                                            section_review_paragraphs(evidence))
                     async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=options)) as stream:
                         async for chunk in stream:
                             step["output"], exceeded = bounded_output(step["output"] + chunk, 16000)

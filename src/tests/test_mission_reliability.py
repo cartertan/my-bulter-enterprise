@@ -1565,6 +1565,9 @@ def test_section_artifact_reviews_bind_two_local_assessments(tmp_path: Path, var
             if variant == 'provider_failure':
                 raise ProviderError('Synthetic provider failure')
             digest = kwargs['options']['response_schema']['properties']['draft_hash']['const']
+            if variant == 'native_quote':
+                choices = kwargs['options']['response_schema']['$defs']['CriterionReview']['properties']['evidence_quotes']['items']['enum']
+                assert 'Explicit consent says "yes".' in choices
             yield json.dumps({'draft_hash': '0' * 64 if variant == 'wrong_hash' else digest,
                 'criteria': [{'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Independent review',
                               'evidence_quotes': ['Explicit consent says "yes".' if variant == 'native_quote' else 'Explicit consent']}]})
@@ -2058,3 +2061,23 @@ def test_uniform_timing_checks_values_even_when_total_matches(tmp_path: Path, du
         if sections:
             assert mission['section_timing_check']['state'] == ('pass' if valid else 'invalid')
         assert mission['acceptance_status'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('paragraphs,restricted', [
+    (['Exact "quote"\nwith spacing  preserved.', 'Other evidence.'], True),
+    (['Repeat', 'Repeat', '  '], True), ([], False),
+    (['x' * 2001], False), (['a' * 2000, 'b' * 2000, 'c' * 2000, 'd'], False),
+])
+def test_artifact_quote_grammar_preserves_evidence_without_forcing_pass(paragraphs: list[str], restricted: bool) -> None:
+    """Bounded native evidence choices do not select a verdict or normalize the text."""
+    from src.app import review_response_schema
+    schema = review_response_schema(['Check evidence'], 'a' * 64, paragraphs)
+    fields = schema['$defs']['CriterionReview']['properties']
+    assert fields['result']['enum'] == ['pass', 'fail', 'unknown']
+    quotes = fields['evidence_quotes']
+    assert 'minItems' not in quotes  # Failure/unknown may report no supporting quotation.
+    if restricted:
+        assert quotes['items']['enum'] == list(dict.fromkeys(p for p in paragraphs if p.strip()))
+    else:
+        assert 'enum' not in quotes['items']
+    assert 'enum' not in review_response_schema(['Check'], 'a' * 64)['$defs']['CriterionReview']['properties']['evidence_quotes']['items']
