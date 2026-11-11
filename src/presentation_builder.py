@@ -108,6 +108,9 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
             raise ValueError('Picture slides require a selected image, a caption up to 120 characters and no flow diagram on the same slide.')
         if any(re.search(r'\{\{[^}]+\}\}', value) for value in [item['title'], item['body'], item['speaker_notes'], caption, *flow]):
             raise ValueError('Resolve template placeholders before composing the presentation.')
+        if any(re.search(r'\$[^$]*\\[A-Za-z]+[^$]*\$|\\\(|\\\[', value)
+               for value in [item['title'], item['body'], item['speaker_notes'], caption, *flow]):
+            raise ValueError('LaTeX math is not rendered. Use plain text or Unicode symbols and flow_steps for diagrams; no text was rewritten.')
         if len(item['title']) > TITLE_LIMIT or len(item['body']) > (PANEL_BODY_LIMIT if flow or image_id else BODY_LIMIT):
             raise ValueError('Slide text exceeds the standard layout budget. Shorten the title or body; nothing was omitted.')
         if flow and (not 2 <= len(flow) <= 5 or any(not value.strip() or len(value) > FLOW_LABEL_LIMIT for value in flow)):

@@ -1434,3 +1434,25 @@ def test_content_order_diagnostic_preserves_primary_interleaving_finding(tmp_pat
     assert secondary['ordering'] == 'content_stream'
     assert secondary['pages'][0]['state'] == 'present'
     assert primary['state'] == 'needs_review' and primary['missing_fragments'] == expected
+
+
+@pytest.mark.parametrize('field', ['title', 'body', 'speaker_notes', 'flow_steps'])
+@pytest.mark.parametrize('markup', [r'$\rightarrow$', r'\(x+1\)', r'\[x+1\]'])
+def test_composer_rejects_unrendered_math(field: str, markup: str) -> None:
+    """Unsupported math must not silently appear as raw markup in a delivered deck."""
+    from src.presentation_builder import compose_presentation
+    slide = {'slide_id': 'slide-1', 'title': 'Wallet', 'body': 'Consent',
+             'speaker_notes': 'Explain', 'duration_seconds': 60, 'flow_steps': ['Consent', 'Issue']}
+    slide[field] = [markup, 'Issue'] if field == 'flow_steps' else markup
+    with pytest.raises(ValueError, match='LaTeX math is not rendered'):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [])
+
+
+def test_composer_preserves_currency_and_unicode_arrows() -> None:
+    """Ordinary currency and native symbols remain literal, without text rewriting."""
+    from src.presentation_builder import compose_presentation
+    slide = {'slide_id': 'slide-1', 'title': 'Wallet', 'body': 'Cost $5; consent → issue',
+             'speaker_notes': 'Cost $5', 'duration_seconds': 60}
+    data = compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [])
+    deck = Presentation(io.BytesIO(data))
+    assert slide['body'] in [shape.text for shape in deck.slides[0].shapes if shape.has_text_frame]

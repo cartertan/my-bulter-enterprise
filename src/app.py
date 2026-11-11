@@ -1450,6 +1450,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
         except (ValueError, KeyError, TypeError):
             result["error"] = ("Section cannot use the inspection layout. Check selected assets/citations, title <=90, body <=700 "
                                "(<=420 with a flow or picture), 2–5 flow labels <=50, caption <=120 and explicit line breaks. "
+                               "Use plain text or Unicode symbols, not LaTeX math. "
                                "No content was omitted; revise the section. Visual appearance is not assessed.")
         return result
 
