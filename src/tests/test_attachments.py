@@ -1456,3 +1456,36 @@ def test_composer_preserves_currency_and_unicode_arrows() -> None:
     data = compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [])
     deck = Presentation(io.BytesIO(data))
     assert slide['body'] in [shape.text for shape in deck.slides[0].shapes if shape.has_text_frame]
+
+
+@pytest.mark.parametrize('field', ['title', 'body', 'flow_steps', 'image_caption'])
+@pytest.mark.parametrize('uppercase', [False, True])
+def test_composer_rejects_visible_registered_source_uuid(field: str, uppercase: bool) -> None:
+    """Internal source references must not leak into audience-facing prose."""
+    from src.presentation_builder import compose_presentation
+    identifier = '12345678-abcd-1234-abcd-123456789012'
+    source = {'source_id': identifier, 'title': 'Official source'}
+    slide = {'slide_id': 'slide-1', 'title': 'Wallet', 'body': 'Consent',
+             'speaker_notes': 'Notes', 'duration_seconds': 60}
+    text = '(' + (identifier.upper() if uppercase else identifier) + ')'
+    slide[field] = [text, 'Issue'] if field == 'flow_steps' else text
+    with pytest.raises(ValueError, match='Keep internal source IDs'):
+        compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [source])
+    assert slide[field] == ([text, 'Issue'] if field == 'flow_steps' else text)
+
+
+def test_composer_preserves_structured_source_uuid_and_unrelated_identifiers() -> None:
+    """Evidence/provenance survive while unrelated technical UUIDs stay valid prose."""
+    from src.presentation_builder import compose_presentation
+    identifier = '12345678-abcd-1234-abcd-123456789012'
+    unrelated = '87654321-abcd-1234-abcd-123456789012'
+    source = {'source_id': identifier, 'title': 'Official source', 'source_url': 'https://example.com/wallet'}
+    slide = {'slide_id': 'slide-1', 'title': 'Wallet', 'body': unrelated,
+             'speaker_notes': identifier, 'duration_seconds': 60,
+             'claims': [{'claim': 'Consent', 'evidence': [{'source_id': identifier, 'quote': 'Consent'}]}]}
+    deck = Presentation(io.BytesIO(compose_presentation({'slides': [slide], 'discussion_seconds': 0}, [source])))
+    visible = '\n'.join(shape.text for shape in deck.slides[0].shapes if shape.has_text_frame)
+    assert identifier not in visible and unrelated in visible and 'S1: Official source' in visible
+    assert identifier in deck.slides[0].notes_slide.notes_text_frame.text
+    assert any(run.hyperlink.address == source['source_url'] for shape in deck.slides[0].shapes
+               if shape.has_text_frame for paragraph in shape.text_frame.paragraphs for run in paragraph.runs)

@@ -354,6 +354,9 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
                    "Use unique slide IDs and integer seconds. Include every planned slide and discussion. ")
         result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram."
                    if compose or section_count else "This is a draft outline, not a generated artifact.")
+        if compose or section_count:
+            result += (" Keep internal source IDs in structured claims/evidence, not titles, body, captions or flow labels. "
+                       "Use source names in prose; the app adds citation links automatically.")
         if section_count:
             # Section drafts feed the same inspection compositor as whole decks.
             # Include this guidance here so start/revision preflight counts it too.
@@ -1458,6 +1461,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             result["error"] = ("Section cannot use the inspection layout. Check selected assets/citations, title <=90, body <=700 "
                                "(<=420 with a flow or picture), 2–5 flow labels <=50, caption <=120 and explicit line breaks. "
                                "Use plain text or Unicode symbols, not LaTeX math. "
+                               "Keep internal source IDs in structured evidence, not visible slide text. "
                                "No content was omitted; revise the section. Visual appearance is not assessed.")
         return result
 

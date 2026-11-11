@@ -69,6 +69,9 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         return Inches(x * x_scale), Inches(y * y_scale), Inches(width * x_scale), Inches(height * y_scale)
     source_names = {source['source_id']: f"S{index + 1}: {source['title']}" for index, source in enumerate(sources)}
     source_metadata = {source['source_id']: source for source in sources}
+    # Only registered internal UUIDs are blocked; ordinary identifiers may be subject matter.
+    internal_source_ids = {identifier.lower() for identifier in source_names
+                           if re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', identifier)}
     images = images or {}
 
     def configure_text(shape, text: str, size: int, color: str) -> None:
@@ -104,6 +107,10 @@ def compose_presentation(manifest: dict, sources: list[dict], template: bytes | 
         flow = item.get('flow_steps', [])
         image_id = item.get('image_id')
         caption = item.get('image_caption', '')
+        visible_text = '\n'.join([item['title'], item['body'], caption, *flow])
+        visible_uuids = re.findall(r'(?<![\w-])[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?![\w-])', visible_text)
+        if internal_source_ids.intersection(value.lower() for value in visible_uuids):
+            raise ValueError('Keep internal source IDs in structured claims/evidence, not visible slide text. Use source names in prose; citation links are added automatically. No text was rewritten.')
         if image_id and (image_id not in images or flow or not caption.strip() or len(caption) > 120):
             raise ValueError('Picture slides require a selected image, a caption up to 120 characters and no flow diagram on the same slide.')
         if any(re.search(r'\{\{[^}]+\}\}', value) for value in [item['title'], item['body'], item['speaker_notes'], caption, *flow]):
