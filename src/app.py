@@ -358,6 +358,7 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
             # Section drafts feed the same inspection compositor as whole decks.
             # Include this guidance here so start/revision preflight counts it too.
             result += ("\nSection inspection layout: titles <=90 characters; body <=700 characters, or <=420 on flow/picture slides. "
+                       "Use plain text or Unicode symbols; LaTeX math is not rendered. "
                        "Use flow_steps for relevant process diagrams: 2–5 labels, each <=50 characters. "
                        "For pictures, use image_id only from selected image attachments and image_caption (1–120 characters); "
                        "do not combine a picture and flow_steps on one slide. Never invent image IDs or remote image URLs. "
@@ -1555,7 +1556,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             mission.get('slide_duration_seconds'))
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
-                        call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))
+                        call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]),
+                                                                               timed_review_texts(author["output"]))
                     try:
                         async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=call_options, **auth)) as stream:
                             async for chunk in stream:

@@ -2038,6 +2038,9 @@ def test_uniform_timing_checks_values_even_when_total_matches(tmp_path: Path, du
         schema = kwargs['options']['response_schema']
         assert 'Every slide must declare exactly 30 seconds' in messages[0]['content']
         if 'draft_hash' in schema['properties']:
+            choices = schema['$defs']['CriterionReview']['properties']['evidence_quotes']['items']['enum']
+            assert 'Explicit consent' in choices
+            assert draft not in choices  # Native fields, not escaped JSON transport.
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
                 'result': 'pass', 'reason': 'Consent', 'evidence_quotes': ['Explicit consent']}]})
         else:
