@@ -282,7 +282,8 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
         raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, unique slide IDs, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
 
 
-def author_response_schema(compose: bool, expected_slide_count: int | None = None, source_ids: list[str] | None = None) -> dict:
+def author_response_schema(compose: bool, expected_slide_count: int | None = None, source_ids: list[str] | None = None,
+                           sources: list[dict] | None = None) -> dict:
     """Bound local author output to the selected layout without changing ordinary outlines."""
     schema = TimedPresentation.model_json_schema()
     if compose:
@@ -299,6 +300,22 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
         slide["properties"]["claims"]["minItems"] = 1
         slide["required"].append("claims")
         schema["$defs"]["ClaimEvidence"]["properties"]["source_id"]["enum"] = list(dict.fromkeys(source_ids))
+        # Small complete excerpts can constrain quotation copying without rewriting evidence.
+        # Larger sources retain ordinary generation plus the same strict post-validation.
+        selected = {item['source_id']: item for item in (sources or [])}
+        if (len(selected) == len(sources or []) and set(selected) == set(source_ids)
+                and all(not item.get('truncated') and item.get('text', '').strip()
+                                                    for item in selected.values())
+                and sum(len(item['text']) for item in selected.values()) <= 2000):
+            variants = []
+            for identifier in dict.fromkeys(source_ids):
+                source_text = selected[identifier]['text']
+                quotes = list(dict.fromkeys(line.strip() for line in source_text.splitlines() if line.strip()))
+                variants.append({'type': 'object', 'additionalProperties': False,
+                                 'required': ['source_id', 'quote'], 'properties': {
+                                     'source_id': {'type': 'string', 'const': identifier},
+                                     'quote': {'type': 'string', 'enum': quotes}}})
+            schema['$defs']['ClaimEvidence'] = {'anyOf': variants}
     return schema
 
 
@@ -1512,7 +1529,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         # Use the same field types and bounds as post-generation validation.
                         call_options["response_schema"] = author_response_schema(
                             bool(mission.get("compose_presentation") or mission.get("sections")), section_slide_target(mission, section_index) if mission.get("sections") else mission.get("expected_slide_count"),
-                            [source["source_id"] for source in mission.get("source_register", [])] if mission.get("require_source_citations") else None)
+                            [source["source_id"] for source in mission.get("source_register", [])] if mission.get("require_source_citations") else None,
+                            artifact_source_texts(mission) if mission.get("require_source_citations") else None)
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]))

@@ -1737,7 +1737,9 @@ def test_composition_design_is_not_research_evidence(tmp_path: Path, mode: str) 
             else:
                 assert schema['$defs']['TimedSlide']['properties']['claims']['minItems'] == 1
                 assert 'claims' in schema['$defs']['TimedSlide']['required']
-                assert schema['$defs']['ClaimEvidence']['properties']['source_id']['enum'] == ['research']
+                citation = schema['$defs']['ClaimEvidence']['anyOf'][0]['properties']
+                assert citation['source_id']['const'] == 'research'
+                assert 'Explicit consent' in citation['quote']['enum']
                 outline = timed_outline(60, 0)
                 outline['slides'][0].update(flow_steps=['Consent', 'Issue'], claims=[{'text': 'Consent',
                     'evidence': [{'source_id': 'research', 'quote': 'Explicit consent'}]}])
@@ -1786,6 +1788,42 @@ def test_local_author_citation_schema_requires_registered_sources(source_ids) ->
         assert 'claims' in slide['required']
         assert schema['$defs']['ClaimEvidence']['properties']['source_id']['enum'] == list(dict.fromkeys(source_ids))
     assert 'claims' not in TimedPresentation.model_json_schema()['$defs']['TimedSlide']['required']
+
+
+@pytest.mark.parametrize('variant', ['complete', 'oversized', 'truncated', 'missing', 'empty', 'duplicate'])
+def test_short_source_quotation_grammar_preserves_identity_and_bounds(variant: str) -> None:
+    """Only small complete unambiguous source sets constrain exact quotation choices."""
+    from src.app import author_response_schema, validate_sources
+    sources = [{'source_id': 'first', 'text': '  Exact "évidence".\nSecond  line.  '},
+               {'source_id': 'second', 'text': 'Different evidence.'}]
+    if variant == 'oversized':
+        sources[0]['text'] = 'x' * 2001
+    elif variant == 'truncated':
+        sources[0]['truncated'] = True
+    elif variant == 'missing':
+        sources.pop()
+    elif variant == 'empty':
+        sources[0]['text'] = '  '
+    elif variant == 'duplicate':
+        sources.append(dict(sources[0]))
+    schema = author_response_schema(True, source_ids=['first', 'second'], sources=sources)
+    definition = schema['$defs']['ClaimEvidence']
+    if variant != 'complete':
+        assert 'anyOf' not in definition
+        assert definition['properties']['source_id']['enum'] == ['first', 'second']
+        return
+    records = [{'id': item['source_id'], 'content': item['text']} for item in sources]
+    for branch in definition['anyOf']:
+        props = branch['properties']
+        identifier = props['source_id']['const']
+        assert branch['additionalProperties'] is False
+        for quote in props['quote']['enum']:
+            outline = timed_outline(60, 0)
+            outline['slides'][0]['claims'] = [{'text': 'Example', 'evidence': [{'source_id': identifier, 'quote': quote}]}]
+            assert validate_sources(json.dumps(outline), [], records, True)['state'] == 'references_valid'
+            other = 'second' if identifier == 'first' else 'first'
+            outline['slides'][0]['claims'][0]['evidence'][0]['source_id'] = other
+            assert validate_sources(json.dumps(outline), [], records, True)['state'] == 'invalid'
 
 
 @pytest.mark.parametrize('overrides', [
