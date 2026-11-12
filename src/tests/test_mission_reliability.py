@@ -2104,6 +2104,9 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
                  'evidence_quotes': ['Explicit consent']}]})
         else:
             assert 'combined deck requires at least one selected uploaded picture' in messages[0]['content']
+            fields = kwargs['options']['response_schema']['$defs']['PictureSlide']
+            assert fields['properties']['image_id']['enum'] == [state['image_id']]
+            assert 'image_id' in fields['required'] and 'image_caption' in fields['required']
             outline = timed_outline(60, 0)
             state['authors'] += 1
             if state['revision']:
@@ -2160,3 +2163,29 @@ def test_section_picture_coverage_rejects_incomplete_or_unselected(fault: str) -
     else:
         mission['attachments'] = [{'id': 'another-picture', 'kind': 'image'}]
     assert validate_section_pictures(mission)['state'] == 'invalid'
+
+
+def test_picture_schema_requires_explicit_selected_asset_decision() -> None:
+    """Local authors must choose a selected picture or null; validators still enforce coverage."""
+    from jsonschema import Draft202012Validator
+    from src.app import author_response_schema
+    schema = author_response_schema(True, image_ids=['selected', 'selected'])
+    validator = Draft202012Validator(schema)
+    outline = timed_outline(60, 0)
+    assert list(validator.iter_errors(outline))
+    slide = outline['slides'][0]
+    slide.update(image_id=None, image_caption='')
+    assert not list(validator.iter_errors(outline))
+    slide.update(image_id='invented', image_caption='Test')
+    assert list(validator.iter_errors(outline))
+    slide['image_id'] = 'selected'
+    slide['flow_steps'] = []
+    assert not list(validator.iter_errors(outline))
+    slide['flow_steps'] = ['Consent', 'Issue']
+    assert list(validator.iter_errors(outline))
+    slide['flow_steps'] = []
+    slide['image_caption'] = ''
+    assert list(validator.iter_errors(outline))
+    assert schema['$defs']['PictureSlide']['properties']['image_id']['enum'] == ['selected']
+    assert author_response_schema(True, image_ids=[]) == author_response_schema(True)
+    assert author_response_schema(False, image_ids=['selected']) == author_response_schema(False)

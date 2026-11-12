@@ -41,7 +41,7 @@ from src.attachment_routes import install_attachment_routes, public_attachment, 
 from src.credentials import Credentials, CredentialError, PROVIDERS as KEY_PROVIDERS
 from src.connectors import Connectors, ConnectorError
 from src.connector_routes import install_connector_routes
-from src.presentation_builder import compose_presentation, TITLE_LIMIT, BODY_LIMIT, FLOW_LABEL_LIMIT
+from src.presentation_builder import compose_presentation, TITLE_LIMIT, BODY_LIMIT, PANEL_BODY_LIMIT, FLOW_LABEL_LIMIT
 
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent
@@ -287,7 +287,8 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
 
 
 def author_response_schema(compose: bool, expected_slide_count: int | None = None, source_ids: list[str] | None = None,
-                           sources: list[dict] | None = None, slide_duration_seconds: int | None = None) -> dict:
+                           sources: list[dict] | None = None, slide_duration_seconds: int | None = None,
+                           image_ids: list[str] | None = None) -> dict:
     """Bound local author output to the selected layout without changing ordinary outlines."""
     schema = TimedPresentation.model_json_schema()
     if slide_duration_seconds is not None:
@@ -323,6 +324,20 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
                                      'source_id': {'type': 'string', 'const': identifier},
                                      'quote': {'type': 'string', 'enum': quotes}}})
             schema['$defs']['ClaimEvidence'] = {'anyOf': variants}
+    if compose and image_ids:
+        # Two complete alternatives preserve layout invariants during local generation.
+        plain = schema['$defs']['TimedSlide']
+        plain['required'].extend(['image_id', 'image_caption'])
+        picture = json.loads(json.dumps(plain))
+        plain['properties']['image_id'] = {'type': 'null'}
+        plain['properties']['image_caption'] = {'type': 'string', 'const': ''}
+        picture['properties']['image_id'] = {'type': 'string', 'enum': list(dict.fromkeys(image_ids))}
+        picture['properties']['image_caption']['minLength'] = 1
+        picture['properties']['flow_steps']['maxItems'] = 0
+        picture['properties']['body']['maxLength'] = PANEL_BODY_LIMIT
+        schema['$defs']['PictureSlide'] = picture
+        schema['properties']['slides']['items'] = {'anyOf': [
+            {'$ref': '#/$defs/TimedSlide'}, {'$ref': '#/$defs/PictureSlide'}]}
     return schema
 
 
@@ -1579,7 +1594,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             bool(mission.get("compose_presentation") or mission.get("sections")), section_slide_target(mission, section_index) if mission.get("sections") else mission.get("expected_slide_count"),
                             [source["source_id"] for source in mission.get("source_register", [])] if mission.get("require_source_citations") else None,
                             artifact_source_texts(mission) if mission.get("require_source_citations") else None,
-                            mission.get('slide_duration_seconds'))
+                            mission.get('slide_duration_seconds'),
+                            [item['id'] for item in mission.get('attachments', []) if item.get('kind') == 'image'])
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]),
