@@ -2143,6 +2143,9 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path, explicit_vi
         child = wait_mission(client)
         assert child['status'] == 'completed'
         assert child['section_visuals'] == (['picture', 'flow'] if explicit_visuals else [])
+        if explicit_visuals:
+            with pytest.raises(ValueError, match='allocation is inconsistent'):
+                assemble_section_outline({**child, 'section_visuals': ['picture', 'unknown']})
         assert child['require_picture'] is True and child['section_picture_check']['state'] == 'pass'
         assert child['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
@@ -2232,3 +2235,22 @@ def test_picture_requirement_rejects_all_flow_sections() -> None:
         MissionInput(prompt='Wallet', bulter_ids=['one', 'two'], sections=['A', 'B'],
                      section_visuals=['flow', 'flow'], require_picture=True,
                      duration_budget_seconds=120, review_criteria=['Consent'])
+
+
+@pytest.mark.parametrize('choices,index', [
+    (['picture'], 0), (['picture', 'unknown'], 0), ('flow', 0), (None, 0),
+    (['picture', 'flow'], -1), (['picture', 'flow'], 2), (['picture', 'flow'], True)])
+def test_stored_section_visual_allocation_fails_closed(choices, index) -> None:
+    """Malformed persisted choices cannot silently remove the visual requirement."""
+    from src.app import section_visual
+    with pytest.raises(ValueError, match='allocation is inconsistent'):
+        section_visual({'sections': ['Consent', 'Issue'], 'section_visuals': choices}, index)
+
+
+def test_legacy_visual_selection_and_unknown_validator() -> None:
+    """Legacy missions remain automatic, while unknown direct validator modes fail."""
+    from src.app import section_visual, check_section_visual, parse_presentation_outline
+    assert section_visual({'sections': ['Consent']}, 0) == 'auto'
+    assert section_visual({'sections': ['Consent'], 'section_visuals': ['flow']}, 0) == 'flow'
+    with pytest.raises(ValueError, match='Unknown section visual'):
+        check_section_visual(parse_presentation_outline(json.dumps(timed_outline(60, 0))), 'unknown')

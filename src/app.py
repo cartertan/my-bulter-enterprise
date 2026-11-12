@@ -459,11 +459,20 @@ def section_slide_target(mission: dict, index: int) -> int | None:
 def section_visual(mission: dict, index: int) -> str:
     """Read the explicit section layout, preserving legacy automatic selection."""
     choices = mission.get('section_visuals', [])
-    return choices[index] if choices else 'auto'
+    if choices == []:
+        return 'auto'
+    # Stored mission snapshots also need validation: unknown modes must not disable checks.
+    if (not isinstance(choices, list) or len(choices) != len(mission.get('sections', []))
+            or any(choice not in ('auto', 'picture', 'flow') for choice in choices)
+            or type(index) is not int or not 0 <= index < len(choices)):
+        raise ValueError('Section visual allocation is inconsistent.')
+    return choices[index]
 
 
 def check_section_visual(outline: TimedPresentation, visual: str) -> None:
     """Reject missing requested visuals without changing model content."""
+    if visual not in ('auto', 'picture', 'flow'):
+        raise ValueError('Unknown section visual layout.')
     if visual == 'picture' and any(not slide.image_id for slide in outline.slides):
         raise ValueError("Every slide in this section requires a selected picture.")
     if visual == 'flow' and any(len(slide.flow_steps) < 2 or slide.image_id for slide in outline.slides):
