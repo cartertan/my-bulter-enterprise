@@ -557,6 +557,8 @@ $('#mission-form').addEventListener('submit', async (event) => {
       if (!/^\d+(\s*,\s*\d+)*$/.test(allocation)) throw new Error('Enter one positive slide count per section, separated by commas.');
       sections.section_slide_counts = allocation.split(',').map(Number);
     }
+    const visuals = $('#section-visuals').value.trim();
+    if (visuals) sections.section_visuals = visuals.split(',').map(value => value.trim().toLowerCase());
     const requiredNotes = state.capabilities?.required_memory ? {required_memory_ids: [...requiredMemory]} : {};
     const mission = await api('missions', 'POST', {...requiredNotes, ...sections, ...reviewCriteria, ...timing, ...exactConstraints, ...sourceCitations, ...composition, ...pictures, prompt: $('#mission-prompt').value, bulter_ids: team, cloud_consent: $('#cloud-consent').checked, ...partialReview, ...connectorMissionOptions(), ...attachmentMissionOptions()});
     clearConnectorSelection(); clearMissionAttachments(); requiredMemory.clear();

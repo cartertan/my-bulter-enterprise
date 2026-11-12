@@ -2086,7 +2086,8 @@ def test_artifact_quote_grammar_preserves_evidence_without_forcing_pass(paragrap
     assert 'enum' not in review_response_schema(['Check'], 'a' * 64)['$defs']['CriterionReview']['properties']['evidence_quotes']['items']
 
 
-def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit_visuals", [False, True])
+def test_section_required_picture_blocks_and_revises(tmp_path: Path, explicit_visuals: bool) -> None:
     """Passing peers cannot override missing combined pictures; one section suffices."""
     import io
     from PIL import Image
@@ -2113,6 +2114,8 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
                 assert 'combined_section_pictures' in messages[0]['content']
                 if state['authors'] % 2:
                     outline['slides'][0].update(image_id=state['image_id'], image_caption='Synthetic illustration', flow_steps=[])
+                elif explicit_visuals:
+                    outline['slides'][0]['flow_steps'] = ['Consent', 'Issue']
             state['draft'] = json.dumps(outline)
             yield state['draft']
 
@@ -2125,7 +2128,8 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
         state['image_id'] = uploaded['id']
         response = client.post('/api/missions', json={'prompt': 'Wallet', 'bulter_ids': [b['id'] for b in bots],
             'sections': ['Consent', 'Issue'], 'review_criteria': ['Consent'], 'duration_budget_seconds': 120,
-            'require_picture': True, 'attachment_ids': [uploaded['id']]})
+            'require_picture': True, 'attachment_ids': [uploaded['id']],
+            'section_visuals': ['picture', 'flow'] if explicit_visuals else []})
         assert response.status_code == 200
         parent = wait_mission(client)
         assert parent['status'] == 'completed_with_issues'
@@ -2138,6 +2142,7 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
         assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
         child = wait_mission(client)
         assert child['status'] == 'completed'
+        assert child['section_visuals'] == (['picture', 'flow'] if explicit_visuals else [])
         assert child['require_picture'] is True and child['section_picture_check']['state'] == 'pass'
         assert child['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
@@ -2189,3 +2194,41 @@ def test_picture_schema_requires_explicit_selected_asset_decision() -> None:
     assert schema['$defs']['PictureSlide']['properties']['image_id']['enum'] == ['selected']
     assert author_response_schema(True, image_ids=[]) == author_response_schema(True)
     assert author_response_schema(False, image_ids=['selected']) == author_response_schema(False)
+
+
+@pytest.mark.parametrize('choices', [['flow'], ['flow', 'unknown'], ['picture', 'flow', 'auto']])
+def test_section_visual_input_rejects_inconsistent_choices(choices: list[str]) -> None:
+    """Visual allocation is explicit and matches the section count."""
+    from src.app import MissionInput
+    with pytest.raises(ValueError):
+        MissionInput(prompt='Wallet', bulter_ids=['one', 'two'], sections=['A', 'B'],
+                     section_visuals=choices, duration_budget_seconds=120, review_criteria=['Consent'])
+
+
+@pytest.mark.parametrize('visual', ['picture', 'flow'])
+def test_section_visual_schema_and_validation_agree(visual: str) -> None:
+    """Provider grammar and independent validation both reject omitted/wrong visuals."""
+    from jsonschema import Draft202012Validator
+    from src.app import author_response_schema, parse_presentation_outline, check_section_visual
+    validator = Draft202012Validator(author_response_schema(True, image_ids=['selected'], visual=visual))
+    outline = timed_outline(60, 0)
+    with pytest.raises(ValueError):
+        check_section_visual(parse_presentation_outline(json.dumps(outline)), visual)
+    assert list(validator.iter_errors(outline))
+    slide = outline['slides'][0]
+    slide.update(image_id='selected' if visual == 'picture' else None,
+                 image_caption='Test picture' if visual == 'picture' else '',
+                 flow_steps=[] if visual == 'picture' else ['Consent', 'Issue'])
+    assert not list(validator.iter_errors(outline))
+    check_section_visual(parse_presentation_outline(json.dumps(outline)), visual)
+    with pytest.raises(ValueError):
+        check_section_visual(parse_presentation_outline(json.dumps(outline)), 'flow' if visual == 'picture' else 'picture')
+
+
+def test_picture_requirement_rejects_all_flow_sections() -> None:
+    """Reject impossible visual combinations before scheduling any inference."""
+    from src.app import MissionInput
+    with pytest.raises(ValueError, match='at least one auto or picture'):
+        MissionInput(prompt='Wallet', bulter_ids=['one', 'two'], sections=['A', 'B'],
+                     section_visuals=['flow', 'flow'], require_picture=True,
+                     duration_budget_seconds=120, review_criteria=['Consent'])
