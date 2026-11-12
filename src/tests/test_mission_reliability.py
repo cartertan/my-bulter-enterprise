@@ -2139,3 +2139,24 @@ def test_section_required_picture_blocks_and_revises(tmp_path: Path) -> None:
         assert child['acceptance_status'] == 'not_assessed'
         assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
         assert app.state.store.get('mission', parent['id']) == parent
+
+
+@pytest.mark.parametrize('fault', ['missing_section', 'incomplete_author', 'malformed_outline', 'unselected_image'])
+def test_section_picture_coverage_rejects_incomplete_or_unselected(fault: str) -> None:
+    """A picture in one draft cannot hide incomplete authors or an unselected asset."""
+    from src.app import validate_section_pictures
+    outline = timed_outline(60, 0)
+    outline['slides'][0].update(image_id='selected-picture', image_caption='Synthetic illustration', flow_steps=[])
+    author = {'status': 'completed', 'output': json.dumps(outline)}
+    mission = {'require_picture': True, 'sections': ['Consent', 'Issue'],
+               'attachments': [{'id': 'selected-picture', 'kind': 'image'}],
+               'steps': [author, {}, dict(author), {}]}
+    if fault == 'missing_section':
+        mission['steps'] = mission['steps'][:2]
+    elif fault == 'incomplete_author':
+        mission['steps'][2]['status'] = 'failed'
+    elif fault == 'malformed_outline':
+        mission['steps'][2]['output'] = '{'
+    else:
+        mission['attachments'] = [{'id': 'another-picture', 'kind': 'image'}]
+    assert validate_section_pictures(mission)['state'] == 'invalid'
