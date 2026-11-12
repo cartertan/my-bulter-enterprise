@@ -783,7 +783,13 @@ def build_context(bot: dict, memories: list[dict], prompt: str, handoffs: list[d
               "Notes are a selected subset, not the complete vault. Cite note titles and source paths; "
               "preserve dates, conflicts and qualifications. Say when evidence is missing.")
     system += (" Speak only as the current named Bulter. Never write another Bulter's verdict "
-               "or claim another reviewer has agreed. Execution completion is not user acceptance.")
+               "or claim another reviewer has agreed. Execution completion is not user acceptance. "
+               "A shared task may describe several roles: perform only your assigned role in this call. "
+               "If assigned Author, return only the requested deliverable; leave reviewer instructions "
+               "for the separately executed reviewer, without simulating its analysis. "
+               "If assigned Reviewer, assess the actual preceding output independently, including "
+               "requested scope, length, missing requirements and any simulated reviewer verdicts. "
+               "Preference formatting alone is not evidence that the full task was satisfied.")
     if any(item.get("status") == "partial" for item in handoffs):
         system += (" A previous output is explicitly incomplete. Review its retained content "
                    "and identify missing evidence; do not claim the missing work is finished.")
