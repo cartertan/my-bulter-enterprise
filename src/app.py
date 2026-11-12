@@ -930,9 +930,14 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
             return JSONResponse({"detail": "Loopback host required."}, status_code=403)
         origin = request.headers.get("origin")
         oauth_callback = request.method == "GET" and request.url.path == "/oauth/google/callback"
+        # A user-opened dashboard link is navigation, not cross-site API access.
+        dashboard_navigation = (request.method == "GET" and request.url.path == "/"
+                                and request.headers.get("sec-fetch-mode") == "navigate"
+                                and request.headers.get("sec-fetch-dest") == "document"
+                                and request.headers.get("sec-fetch-user") == "?1")
         if origin and origin != str(request.base_url).rstrip("/") and not oauth_callback:
             return JSONResponse({"detail": "Cross-origin access is blocked."}, status_code=403)
-        if request.headers.get("sec-fetch-site") == "cross-site" and not oauth_callback:
+        if request.headers.get("sec-fetch-site") == "cross-site" and not (oauth_callback or dashboard_navigation):
             return JSONResponse({"detail": "Cross-site access is blocked."}, status_code=403)
         if request.url.path.startswith("/api/") and not secrets.compare_digest(request.headers.get("x-bulter-token", ""), csrf):
             return JSONResponse({"detail": "Refresh the dashboard to reconnect."}, status_code=403)

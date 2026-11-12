@@ -266,3 +266,21 @@ def test_local_review_schema_transport_does_not_change_other_calls() -> None:
     assert 'format' not in other and 'response_format' not in other
     with pytest.raises(ProviderError):
         request_spec('ollama', 'synthetic', 'System', [], {'response_schema': 'invalid'})
+
+
+def test_user_activated_dashboard_navigation(client: TestClient) -> None:
+    """External dashboard links may open; embedded or scripted API reads may not."""
+    headers = {'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate',
+               'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}
+    response = client.get('/', headers=headers)
+    assert response.status_code == 200
+    assert response.headers['x-frame-options'] == 'DENY'
+    assert "frame-ancestors 'none'" in response.headers['content-security-policy']
+    assert client.get('/api/state', headers=headers).status_code == 403
+    assert client.post('/', headers=headers).status_code == 403
+    assert client.get('/', headers={**headers, 'origin': 'https://attacker.example'}).status_code == 403
+    assert client.get('/', headers={**headers, 'host': 'attacker.example'}).status_code == 403
+    for key in ('sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user'):
+        assert client.get('/', headers={k: v for k, v in headers.items() if k != key}).status_code == 403
+    assert client.get('/', headers={**headers, 'sec-fetch-dest': 'iframe'}).status_code == 403
+    assert client.get('/', headers={**headers, 'sec-fetch-mode': 'cors'}).status_code == 403
