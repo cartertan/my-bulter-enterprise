@@ -13,10 +13,34 @@ import json
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Any
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_TEXT = 120_000
 EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".pptx"}
+
+
+def word_block_text(container: Any, depth: int = 0) -> str:
+    """Read paragraphs and nested tables in order with an explicit nesting bound."""
+    if depth > 32:
+        raise ValueError("Word table nesting exceeds the supported limit. Flatten deeply nested tables first.")
+    parts = []
+    for block in container.iter_inner_content():
+        if hasattr(block, "text"):
+            parts.append(block.text)
+        else:
+            rows, seen = [], set()
+            for row in block.rows:
+                cells = []
+                for cell in row.cells:
+                    # Merged grid positions reference the same cell; do not amplify nested text.
+                    if cell._tc not in seen:
+                        seen.add(cell._tc)
+                        cells.append(word_block_text(cell, depth + 1))
+                if cells:
+                    rows.append(" | ".join(cells))
+            parts.append("\n".join(rows))
+    return "\n".join(parts)
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -28,6 +52,9 @@ def extract_text(data: bytes, filename: str) -> str:
         if suffix in {".docx", ".pptx"}:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 members = archive.infolist()
+                # ZIP permits duplicate names; Office readers may select different versions.
+                if len({member.filename for member in members}) != len(members):
+                    raise ValueError("Office document contains duplicate package parts. Resave it as a clean Office file.")
                 if len(members) > 2000 or sum(m.file_size for m in members) > 40 * 1024 * 1024:
                     raise ValueError("Office document is too large after decompression.")
                 if any("vbaproject" in m.filename.lower() for m in members):
@@ -37,17 +64,27 @@ def extract_text(data: bytes, filename: str) -> str:
         elif suffix == ".docx":
             from docx import Document
             document = Document(io.BytesIO(data))
-            text = "\n".join(block.text if hasattr(block, "text") else
-                             "\n".join(" | ".join(c.text for c in row.cells) for row in block.rows)
-                             for block in document.iter_inner_content())
+            text = word_block_text(document)
         elif suffix == ".pptx":
             from pptx import Presentation
             deck = Presentation(io.BytesIO(data))
-            text = "\n\n".join(f"Slide {i + 1}\n" + "\n".join(
-                shape.text if shape.has_text_frame else
-                "\n".join(" | ".join(c.text for c in row.cells) for row in shape.table.rows)
-                for shape in slide.shapes if shape.has_text_frame or shape.has_table)
-                for i, slide in enumerate(deck.slides))
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            pages = []
+            for index, slide in enumerate(deck.slides):
+                parts = []
+                # Traverse groups iteratively: retain drawing order without recursion limits.
+                pending = list(reversed(list(slide.shapes)))
+                while pending:
+                    shape = pending.pop()
+                    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                        pending.extend(reversed(list(shape.shapes)))
+                    elif shape.has_text_frame:
+                        parts.append(shape.text)
+                    elif shape.has_table:
+                        parts.append("\n".join(" | ".join(cell.text for cell in row.cells)
+                                               for row in shape.table.rows))
+                pages.append(f"Slide {index + 1}\n" + "\n".join(parts))
+            text = "\n\n".join(pages)
         else:
             import pdfplumber
             with pdfplumber.open(io.BytesIO(data)) as document:

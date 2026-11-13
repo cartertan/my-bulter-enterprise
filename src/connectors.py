@@ -112,10 +112,13 @@ class Connectors:
         except (httpx.HTTPError, ValueError, UnicodeError):
             raise ConnectorError("The service could not be reached or returned an invalid response. Inspect the service before retrying a write.") from None
 
-    def evidence(self, source: str, title: str, content: str) -> dict:
+    def evidence(self, source: str, title: str, content: str, *, source_url: str | None = None) -> dict:
         """Save bounded untrusted reference material locally, never automatic memory."""
         record = {"id": str(uuid4()), "source": source, "title": title, "created": timestamp(),
                   "content": content[:6000], "truncated": len(content) > 6000, "local_only": True}
+        if source_url:
+            # A supplied URL is provenance metadata, not proof of retrieval or publisher identity.
+            record.update(source_url=source_url, provenance="user_provided; page_not_fetched")
         return self.store.put("connector_evidence", record)
 
     async def google_start(self, data: dict, redirect: str) -> dict:

@@ -21,8 +21,16 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
+    "scripts/render_presentation.py",
+    "src/presentation_builder.py",
+    "scripts/check_release.py", "src/tests/test_mission_reliability.py", "src/docs/REMEDIATION_PLAN.md",
+    "src/docs/FUNCTIONAL_REVIEW_2026-11-13.md",
+    "src/docs/learning/README.md", "src/docs/learning/BUTLER_CASE_STUDY.md",
+    "src/docs/learning/WORKFLOW_TEMPLATES.md",
+    "src/attachments.py", "src/attachment_routes.py", "src/static/attachments.js",
+    "src/tests/test_attachments.py", "src/docs/MISSION_ATTACHMENTS.md", "src/docs/screenshots/mission-attachments.jpg",
     "src/docs/UPLOAD_2026-10-27.md", "src/docs/screenshots/connectors-connected.jpg",
-    "src/connectors.py", "src/connector_routes.py", "src/static/connectors.js",
+    "src/connectors.py", "src/web_evidence.py", "src/tests/test_web_evidence.py", "src/connector_routes.py", "src/static/connectors.js",
     "src/tests/test_connectors.py", "src/docs/CONNECTORS.md", "scripts/run_browser_mcp.sh",
     ".gitignore", "src/local_visuals.py", "src/image_engine.py", "src/mflux_worker.py", "scripts/setup_images.py", "src/image-requirements.txt", "src/tests/test_local_visuals.py", "src/docs/LOCAL_VISUALS.md", "src/docs/screenshots/model-concierge.jpg", "src/docs/screenshots/image-engine-ready.jpg", "src/docs/screenshots/flux-example.jpg", "src/docs/screenshots/photo-example.jpg", "README.md", "scripts/run.sh", "scripts/package_release.py",
     "src/.gitignore", "src/__init__.py", "src/app.py", "src/providers.py", "src/storage.py",
