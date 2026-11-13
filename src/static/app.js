@@ -406,6 +406,9 @@ function renderDetail() {
       block.append(el('p', 'help', `Structured assessment: ${step.review.state} · draft SHA-256 ${step.review.draft_hash}`));
       if (step.review.blocking_checks?.length) block.append(el('p', 'error', `Blocking checks: ${step.review.blocking_checks.join(', ')}`));
       if (step.review.error) block.append(el('p', 'error', step.review.error));
+      for (const check of step.review.deterministic_checks || []) {
+        if (check.kind === 'retained_word_limit') block.append(el('p', 'help', `App check — ${check.criterion_id}: ${check.actual} retained words / maximum ${check.maximum} · ${check.state}. Includes markup and JSON; separate from the model assessment.`));
+      }
       for (const item of step.review.criteria) block.append(el('p', 'help', `${item.criterion_id}: ${item.result} — ${item.reason} · Evidence: ${item.evidence_quotes.join(' / ')}`));
     }
     if (step.error) block.append(el('p', 'error', step.error));

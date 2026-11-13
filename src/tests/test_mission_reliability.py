@@ -545,6 +545,8 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         assert record['draft_hash'] == draft_hash(draft)
         if verdict == 'word_limit':
             assert record['error_code'] == 'review_word_limit'
+            assert record['deterministic_checks'] == [{'criterion_id': 'criterion-1',
+                'kind': 'retained_word_limit', 'actual': 5, 'maximum': 4, 'state': 'exceeded'}]
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
 
 
@@ -2264,7 +2266,8 @@ def test_legacy_visual_selection_and_unknown_validator() -> None:
 
 
 @pytest.mark.parametrize('words,result,expected', [(150, 'pass', 'criteria_pass'),
-    (151, 'pass', 'invalid'), (151, 'fail', 'needs_revision'), (151, 'unknown', 'needs_revision')])
+    (151, 'pass', 'invalid'), (151, 'fail', 'needs_revision'), (151, 'unknown', 'needs_revision'),
+    (149, 'fail', 'needs_revision')])
 def test_explicit_word_limit_rejects_false_positive_review(words: int, result: str, expected: str) -> None:
     """Exact evidence and a matching hash cannot bypass an explicit draft word limit."""
     import json
@@ -2277,6 +2280,9 @@ def test_explicit_word_limit_rejects_false_positive_review(words: int, result: s
     checked = validate_draft_review(json.dumps(payload), author,
                                     ['Maximum retained draft words: 150'], 'reviewer')
     assert checked['state'] == expected
+    assert checked['deterministic_checks'] == [{'criterion_id': 'criterion-1',
+        'kind': 'retained_word_limit', 'actual': words, 'maximum': 150,
+        'state': 'pass' if words <= 150 else 'exceeded'}]
     if expected == 'invalid':
         assert checked['error_code'] == 'review_word_limit'
         assert '151' in checked['error']

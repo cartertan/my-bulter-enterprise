@@ -704,11 +704,15 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
             return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
         criterion_number = int(item.criterion_id.split("-")[1])
         limit = re.fullmatch(r"Maximum retained draft words: ([1-9][0-9]{0,5})", criteria[criterion_number - 1])
-        if item.result == "pass" and limit:
+        if limit:
             # Enforce only the explicit count contract, never infer a limit from arbitrary prose.
             actual = len(author["output"].split())
             maximum = int(limit.group(1))
-            if actual > maximum:
+            record.setdefault("deterministic_checks", []).append({
+                "criterion_id": item.criterion_id, "kind": "retained_word_limit",
+                "actual": actual, "maximum": maximum,
+                "state": "pass" if actual <= maximum else "exceeded"})
+            if item.result == "pass" and actual > maximum:
                 return invalid("review_word_limit", f"Criterion {criterion_number}: retained draft has {actual} whitespace-delimited words; maximum is {maximum}. A passing review is invalid.",
                                criterion_number=criterion_number)
         for quote_number, quote in enumerate(item.evidence_quotes, 1):
