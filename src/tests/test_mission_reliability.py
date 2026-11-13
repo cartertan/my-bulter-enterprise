@@ -499,7 +499,7 @@ def test_structured_review_fails_closed(variant: str) -> None:
 
 
 
-@pytest.mark.parametrize('verdict', ['pass', 'fail', 'invalid'])
+@pytest.mark.parametrize('verdict', ['pass', 'fail', 'invalid', 'word_limit'])
 def test_structured_review_mission_records_identity_and_keeps_acceptance_separate(tmp_path: Path, verdict: str) -> None:
     """Validated model assessments remain separate from execution and approval."""
     import json
@@ -522,14 +522,14 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
             assert draft_hash(draft) in calls[-1]
             assert kwargs['options']['response_schema']['properties']['draft_hash']['const'] == draft_hash(draft)
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [
-                {'criterion_id': 'criterion-1', 'result': verdict, 'reason': 'Synthetic assessment',
-                 'evidence_quotes': ['explicit consent'] if verdict == 'pass' else []}]})
+                {'criterion_id': 'criterion-1', 'result': 'pass' if verdict == 'word_limit' else verdict, 'reason': 'Synthetic assessment',
+                 'evidence_quotes': ['explicit consent'] if verdict in {'pass', 'word_limit'} else []}]})
 
     with TestClient(app) as client, patch('src.app.generate', stream):
         client.headers['x-bulter-token'] = app.state.csrf
         bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
         response = client.post('/api/missions', json={'prompt': 'Draft and review', 'bulter_ids': [b['id'] for b in bots],
-            'review_criteria': ['Require explicit consent']})
+            'review_criteria': ['Maximum retained draft words: 4' if verdict == 'word_limit' else 'Require explicit consent']})
         assert response.status_code == 200
         mission = wait_mission(client)
         assert mission['status'] == ('completed' if verdict == 'pass' else 'completed_with_issues')
@@ -538,6 +538,8 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         record = mission['steps'][1]['review']
         assert record['reviewer_id'] == bots[1]['id'] and record['author_id'] == bots[0]['id']
         assert record['draft_hash'] == draft_hash(draft)
+        if verdict == 'word_limit':
+            assert record['error_code'] == 'review_word_limit'
         assert client.get(f"/api/missions/{mission['id']}/export/pptx").status_code == 400
 
 
@@ -2254,3 +2256,37 @@ def test_legacy_visual_selection_and_unknown_validator() -> None:
     assert section_visual({'sections': ['Consent'], 'section_visuals': ['flow']}, 0) == 'flow'
     with pytest.raises(ValueError, match='Unknown section visual'):
         check_section_visual(parse_presentation_outline(json.dumps(timed_outline(60, 0))), 'unknown')
+
+
+@pytest.mark.parametrize('words,result,expected', [(150, 'pass', 'criteria_pass'),
+    (151, 'pass', 'invalid'), (151, 'fail', 'needs_revision'), (151, 'unknown', 'needs_revision')])
+def test_explicit_word_limit_rejects_false_positive_review(words: int, result: str, expected: str) -> None:
+    """Exact evidence and a matching hash cannot bypass an explicit draft word limit."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    draft = 'Word count: 20.\n' + 'word\t' * (words - 3)
+    author = {'bulter_id': 'author', 'output': draft, 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    payload = {'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+        'result': result, 'reason': 'Model assessment', 'evidence_quotes': ['Word count: 20.']}]}
+    checked = validate_draft_review(json.dumps(payload), author,
+                                    ['Maximum retained draft words: 150'], 'reviewer')
+    assert checked['state'] == expected
+    if expected == 'invalid':
+        assert checked['error_code'] == 'review_word_limit'
+        assert '151' in checked['error']
+    assert author['output'] == draft
+
+
+def test_word_limit_does_not_infer_contract_from_unrelated_numbers() -> None:
+    """Free-form criteria remain semantic assessments rather than guessed count contracts."""
+    import json
+    from src.app import draft_hash, validate_draft_review, criteria_prompt
+    draft = 'word ' * 151
+    author = {'bulter_id': 'author', 'output': draft, 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    payload = {'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+        'result': 'pass', 'reason': 'Evidence', 'evidence_quotes': ['word']}]}
+    criteria = ['Discuss 150 pilot participants.']
+    assert validate_draft_review(json.dumps(payload), author, criteria, 'r')['state'] == 'criteria_pass'
+    assert 'inclusive limit' in criteria_prompt('Draft', ['Maximum retained draft words: 150'])

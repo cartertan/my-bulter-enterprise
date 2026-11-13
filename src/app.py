@@ -610,6 +610,11 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
         return prompt
     result = prompt + "\n\nREVIEW CRITERIA:\n" + json.dumps(
         {f"criterion-{index + 1}": text for index, text in enumerate(criteria)}, ensure_ascii=False)
+    if any(re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", text) for text in criteria):
+        result += ("\nMaximum retained draft words is an inclusive limit on whitespace-delimited words "
+                   "in the entire retained draft, including headings, markup, JSON and appended verdicts. "
+                   "It is not a count of visible slide text or speaking time. The app rejects a passing "
+                   "review when this explicit limit is exceeded.")
     if reviewed_hash is not None:
         result += ('\nReturn only JSON with exactly these fields: {"draft_hash":"' + reviewed_hash
                    + '\", "criteria":[{"criterion_id":"criterion-1", "result":"pass|fail|unknown", '
@@ -680,6 +685,15 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
             return invalid("review_incomplete_draft", "A passing assessment cannot rely on an incomplete author draft.")
         if item.result == "pass" and not item.evidence_quotes:
             return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
+        criterion_number = int(item.criterion_id.split("-")[1])
+        limit = re.fullmatch(r"Maximum retained draft words: ([1-9][0-9]{0,5})", criteria[criterion_number - 1])
+        if item.result == "pass" and limit:
+            # Enforce only the explicit count contract, never infer a limit from arbitrary prose.
+            actual = len(author["output"].split())
+            maximum = int(limit.group(1))
+            if actual > maximum:
+                return invalid("review_word_limit", f"Criterion {criterion_number}: retained draft has {actual} whitespace-delimited words; maximum is {maximum}. A passing review is invalid.",
+                               criterion_number=criterion_number)
         for quote_number, quote in enumerate(item.evidence_quotes, 1):
             if not quote.strip() or len(quote) > 2000 or (quote not in author["output"] and not any(quote in text for text in native_texts)):
                 # Criterion IDs were checked above; expose positions, never generated quotation text.
