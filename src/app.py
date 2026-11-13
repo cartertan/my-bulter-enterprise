@@ -616,12 +616,20 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
                    "It is not a count of visible slide text or speaking time. The app rejects a passing "
                    "review when this explicit limit is exceeded.")
     if reviewed_hash is not None:
-        result += ('\nReturn only JSON with exactly these fields: {"draft_hash":"' + reviewed_hash
+        result += ('\nCURRENT EXECUTION STAGE: REVIEWER. The author has already run. '
+                   'Assess its retained output; do not create a replacement deliverable. '
+                   'Return only JSON with exactly these fields: {"draft_hash":"' + reviewed_hash
                    + '\", "criteria":[{"criterion_id":"criterion-1", "result":"pass|fail|unknown", '
                    '"reason":"explanation", "evidence_quotes":["exact quotation from the author draft"]}]}. '
                    'Include every criterion exactly once. A pass requires a nonempty exact draft quotation. '
                    'Do not add agent identity or invent quotations. Draft quotations do not verify external facts. '
                    'Missing evidence must be fail or unknown. Assess only the retained author draft.')
+    else:
+        # Stage comes from orchestration, not a model's interpretation of role names or criteria.
+        result += ('\nCURRENT EXECUTION STAGE: AUTHOR. Create the requested deliverable now. '
+                   'The criteria above are requirements for your draft, not a request to score a prior draft. '
+                   'No prior author output is needed. Do not output criterion verdicts, review JSON, '
+                   'reviewer analysis or an approval claim. A separate later call performs the review.')
     return result
 
 
@@ -653,6 +661,15 @@ def timed_review_texts(output: str) -> list[str]:
             texts.append(claim.text)
             texts.extend(citation.quote for citation in claim.evidence)
     return texts
+
+
+def draft_review_quotes(output: str) -> list[str]:
+    """Offer native outline text or literal retained lines, never decoded arbitrary JSON."""
+    native = timed_review_texts(output)
+    if native:
+        return native
+    # Every fallback choice is an exact substring; validation still checks the original draft.
+    return [line for line in output.splitlines() if any(char.isalnum() for char in line)]
 
 
 def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str, artifact_paragraphs: list[str] | None = None) -> dict:
@@ -1690,7 +1707,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     if bot["provider"] == "ollama" and author and criteria:
                         # Ollama grammar controls syntax, not factual accuracy or acceptance.
                         call_options["response_schema"] = review_response_schema(criteria, draft_hash(author["output"]),
-                                                                               timed_review_texts(author["output"]))
+                                                                               draft_review_quotes(author["output"]))
                     try:
                         async with aclosing(generate(bot["provider"], bot["model"], system, messages, options=call_options, **auth)) as stream:
                             async for chunk in stream:

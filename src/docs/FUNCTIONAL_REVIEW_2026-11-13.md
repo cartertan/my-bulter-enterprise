@@ -29,5 +29,12 @@
 
 ## Warnings
 
+### Follow-up fixes and retests
+
+- Explicit execution-stage instructions corrected the observed author-as-reviewer behavior in subsequent isolated Qwen/Granite runs.
+- Bounded literal quotation choices fixed the next observed escaping mismatch without relaxing exact-evidence validation.
+- One live run produced 172 words despite a claimed 135; the app rejected the review's false pass against the maximum-150 contract. A final run on the finished source produced 56 retained words and a valid passing review. The reviewer still echoed the author's inaccurate 48-word claim, so semantic reliability remains unresolved.
+- Release checks after these changes: 714 tests, three JavaScript checks and 79 allowlisted files pass. The report is now explicitly included in the package allowlist; its earlier omission was detected and corrected.
+
 - Do not rely on model PASS results alone to approve a deliverable.
 - The app is suitable for further supervised functional testing; it is not yet established as a dependable autonomous presentation workflow.

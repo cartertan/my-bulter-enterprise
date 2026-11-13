@@ -24,6 +24,7 @@ FILES = (
     "scripts/render_presentation.py",
     "src/presentation_builder.py",
     "scripts/check_release.py", "src/tests/test_mission_reliability.py", "src/docs/REMEDIATION_PLAN.md",
+    "src/docs/FUNCTIONAL_REVIEW_2026-11-13.md",
     "src/docs/learning/README.md", "src/docs/learning/BUTLER_CASE_STUDY.md",
     "src/docs/learning/WORKFLOW_TEMPLATES.md",
     "src/attachments.py", "src/attachment_routes.py", "src/static/attachments.js",

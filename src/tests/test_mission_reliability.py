@@ -513,12 +513,17 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         calls.append(messages[0]['content'])
         assert 'criterion-1' in calls[-1]
         if len(calls) == 1:
+            assert 'CURRENT EXECUTION STAGE: AUTHOR.' in calls[-1]
+            assert 'CURRENT EXECUTION STAGE: REVIEWER.' not in calls[-1]
             assert 'response_schema' not in kwargs['options']
             yield draft
         elif verdict == 'invalid':
+            assert 'CURRENT EXECUTION STAGE: REVIEWER.' in calls[-1]
             assert kwargs['options']['response_schema']['properties']['draft_hash']['const'] == draft_hash(draft)
             yield 'Author and Reviewer both agree.'
         else:
+            assert 'CURRENT EXECUTION STAGE: REVIEWER.' in calls[-1]
+            assert 'CURRENT EXECUTION STAGE: AUTHOR.' not in calls[-1]
             assert draft_hash(draft) in calls[-1]
             assert kwargs['options']['response_schema']['properties']['draft_hash']['const'] == draft_hash(draft)
             yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [
@@ -2290,3 +2295,30 @@ def test_word_limit_does_not_infer_contract_from_unrelated_numbers() -> None:
     criteria = ['Discuss 150 pilot participants.']
     assert validate_draft_review(json.dumps(payload), author, criteria, 'r')['state'] == 'criteria_pass'
     assert 'inclusive limit' in criteria_prompt('Draft', ['Maximum retained draft words: 150'])
+
+
+def test_plain_draft_quote_choices_preserve_literal_json_and_whitespace() -> None:
+    """Unrecognized JSON is not decoded to allow fabricated or normalized quotations."""
+    import json
+    from src.app import draft_review_quotes, review_response_schema, validate_draft_review, draft_hash
+    draft = '{\n  "deliverable": "Alpha\\nBeta  gamma"\n}'
+    choices = draft_review_quotes(draft)
+    assert choices == [draft.splitlines()[1]]
+    assert all(quote in draft for quote in choices)
+    assert 'Alpha\nBeta  gamma' not in choices
+    schema = review_response_schema(['Check'], draft_hash(draft), choices)
+    assert schema['$defs']['CriterionReview']['properties']['evidence_quotes']['items']['enum'] == choices
+    author = {'bulter_id': 'a', 'output': draft, 'status': 'completed', 'section_id': 'section-1', 'draft_revision': 1}
+    payload = {'draft_hash': draft_hash(draft), 'criteria': [{'criterion_id': 'criterion-1',
+        'result': 'pass', 'reason': 'Check', 'evidence_quotes': [choices[0]]}]}
+    assert validate_draft_review(json.dumps(payload), author, ['Check'], 'r')['state'] == 'criteria_pass'
+    payload['criteria'][0]['evidence_quotes'] = ['Alpha\nBeta  gamma']
+    assert validate_draft_review(json.dumps(payload), author, ['Check'], 'r')['error_code'] == 'review_evidence'
+
+
+def test_plain_draft_quote_choices_keep_grammar_bounded() -> None:
+    """Large retained lines retain unconstrained grammar instead of truncating evidence."""
+    from src.app import draft_review_quotes, review_response_schema
+    draft = 'x' * 2001
+    schema = review_response_schema(['Check'], 'a' * 64, draft_review_quotes(draft))
+    assert 'enum' not in schema['$defs']['CriterionReview']['properties']['evidence_quotes']['items']
