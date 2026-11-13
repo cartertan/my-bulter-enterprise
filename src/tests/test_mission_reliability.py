@@ -2328,3 +2328,47 @@ def test_plain_draft_quote_choices_keep_grammar_bounded() -> None:
     draft = 'x' * 2001
     schema = review_response_schema(['Check'], 'a' * 64, draft_review_quotes(draft))
     assert 'enum' not in schema['$defs']['CriterionReview']['properties']['evidence_quotes']['items']
+
+
+def test_word_limit_revision_uses_measured_failure_and_preserves_parent(tmp_path: Path) -> None:
+    """A false passing model verdict must not override app findings during revision."""
+    import json
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'word-revision.sqlite3')
+    calls = []
+    drafts = ['One two three four five', 'One two three']
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Correct the draft on the explicit second attempt; reviewers always claim pass."""
+        calls.append(messages[0]['content'])
+        attempt = (len(calls) - 1) // 2
+        if len(calls) % 2:
+            if attempt:
+                assert 'review_word_limit' in calls[-1]
+                assert 'retained draft has 5' in calls[-1]
+                assert 'CURRENT EXECUTION STAGE: AUTHOR.' in calls[-1]
+            yield drafts[attempt]
+        else:
+            yield json.dumps({'draft_hash': draft_hash(drafts[attempt]), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Model says pass',
+                 'evidence_quotes': ['One two']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft and review',
+            'bulter_ids': [b['id'] for b in bots], 'review_criteria': ['Maximum retained draft words: 4']})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert parent['status'] == 'completed_with_issues'
+        assert parent['steps'][1]['review']['error_code'] == 'review_word_limit'
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert len(calls) == 4 and child['revision_round'] == 1
+        assert child['status'] == 'completed' and child['acceptance_status'] == 'not_assessed'
+        review = child['steps'][1]['review']
+        assert review['draft_hash'] == draft_hash(drafts[1])
+        assert review['deterministic_checks'][0]['actual'] == 3
+        assert review['deterministic_checks'][0]['state'] == 'pass'
+        assert app.state.store.get('mission', parent['id']) == parent
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 409
