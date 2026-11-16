@@ -2427,3 +2427,53 @@ def test_measured_limits_survive_invalid_model_reviews(failure: str) -> None:
                                    'missing_evidence': 'review_missing_evidence'}[failure]
     assert result['deterministic_checks'] == [{'criterion_id': 'criterion-2',
         'kind': 'retained_word_limit', 'actual': 3, 'maximum': 2, 'state': 'exceeded'}]
+
+
+def test_invalid_review_measurements_survive_restart_and_revision(tmp_path: Path) -> None:
+    """Persist app measurements and carry them into repair despite invalid model JSON."""
+    import json
+    from src.app import draft_hash
+    database = tmp_path / 'invalid-review-restart.sqlite3'
+    calls = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Return invalid review first, then a corrected draft and valid assessment."""
+        calls.append(messages[0]['content'])
+        if len(calls) == 1:
+            yield 'One two three four five'
+        elif len(calls) == 2:
+            yield 'Both agents agree; no JSON needed.'
+        elif len(calls) == 3:
+            assert 'review_json' in calls[-1]
+            assert 'deterministic_checks' in calls[-1]
+            assert 'exceeded' in calls[-1]
+            yield 'One two'
+        else:
+            yield json.dumps({'draft_hash': draft_hash('One two'), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Short draft',
+                 'evidence_quotes': ['One two']}]})
+
+    app = create_app(database)
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        assert client.post('/api/missions', json={'prompt': 'Draft and review',
+            'bulter_ids': [bot['id'] for bot in bots],
+            'review_criteria': ['Maximum retained draft words: 4']}).status_code == 200
+        parent = wait_mission(client)
+        assert parent['status'] == 'completed_with_issues'
+        review = parent['steps'][1]['review']
+        assert review['error_code'] == 'review_json'
+        assert review['deterministic_checks'][0]['actual'] == 5
+    restored = create_app(database)
+    with TestClient(restored) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = restored.state.csrf
+        assert restored.state.store.get('mission', parent['id']) == parent
+        assert len(calls) == 2  # Restart must never replay completed provider calls.
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert len(calls) == 4
+        assert child['status'] == 'completed'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert child['steps'][1]['review']['deterministic_checks'][0]['actual'] == 2
+        assert restored.state.store.get('mission', parent['id']) == parent
