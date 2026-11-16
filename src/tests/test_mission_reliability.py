@@ -2405,3 +2405,25 @@ def test_stored_malformed_word_limit_cannot_receive_passing_review() -> None:
     result = validate_draft_review(json.dumps(payload), author, ['Maximum retained draft words: 0'], 'r')
     assert result['state'] == 'invalid'
     assert result['error_code'] == 'review_word_limit_format'
+
+
+@pytest.mark.parametrize("failure", ["json", "hash", "missing_evidence"])
+def test_measured_limits_survive_invalid_model_reviews(failure: str) -> None:
+    """Model failures cannot suppress independent checks on the retained draft."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    author = {'bulter_id': 'a', 'output': 'One two three', 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    payload = {'draft_hash': draft_hash(author['output']), 'criteria': [
+        {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Fine', 'evidence_quotes': []},
+        {'criterion_id': 'criterion-2', 'result': 'pass', 'reason': 'Fine', 'evidence_quotes': ['One']}]}
+    if failure == 'hash':
+        payload['draft_hash'] = '0' * 64
+    output = 'invalid json' if failure == 'json' else json.dumps(payload)
+    result = validate_draft_review(output, author,
+        ['Check content', 'Maximum retained draft words: 2'], 'r')
+    assert result['state'] == 'invalid'
+    assert result['error_code'] == {'json': 'review_json', 'hash': 'review_draft_hash',
+                                   'missing_evidence': 'review_missing_evidence'}[failure]
+    assert result['deterministic_checks'] == [{'criterion_id': 'criterion-2',
+        'kind': 'retained_word_limit', 'actual': 3, 'maximum': 2, 'state': 'exceeded'}]

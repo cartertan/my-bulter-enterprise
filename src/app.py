@@ -689,6 +689,15 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
         if (criterion.strip().casefold().startswith("maximum retained draft words")
                 and not re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", criterion)):
             return invalid("review_word_limit_format", "The retained word-limit criterion is malformed. Start a new mission with the exact enforced format.")
+    # Measure the retained draft independently of reviewer syntax, ordering or verdicts.
+    for index, criterion in enumerate(criteria, 1):
+        limit = re.fullmatch(r"Maximum retained draft words: ([1-9][0-9]{0,5})", criterion)
+        if limit:
+            actual, maximum = len(author["output"].split()), int(limit.group(1))
+            record.setdefault("deterministic_checks", []).append({
+                "criterion_id": f"criterion-{index}", "kind": "retained_word_limit",
+                "actual": actual, "maximum": maximum,
+                "state": "pass" if actual <= maximum else "exceeded"})
     try:
         payload = json.loads(output, object_pairs_hook=unique_json_fields)
     except json.JSONDecodeError:
@@ -716,10 +725,6 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
             # Enforce only the explicit count contract, never infer a limit from arbitrary prose.
             actual = len(author["output"].split())
             maximum = int(limit.group(1))
-            record.setdefault("deterministic_checks", []).append({
-                "criterion_id": item.criterion_id, "kind": "retained_word_limit",
-                "actual": actual, "maximum": maximum,
-                "state": "pass" if actual <= maximum else "exceeded"})
             if item.result == "pass" and actual > maximum:
                 return invalid("review_word_limit", f"Criterion {criterion_number}: retained draft has {actual} whitespace-delimited words; maximum is {maximum}. A passing review is invalid.",
                                criterion_number=criterion_number)
