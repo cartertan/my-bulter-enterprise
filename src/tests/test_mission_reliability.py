@@ -2372,3 +2372,36 @@ def test_word_limit_revision_uses_measured_failure_and_preserves_parent(tmp_path
         assert review['deterministic_checks'][0]['state'] == 'pass'
         assert app.state.store.get('mission', parent['id']) == parent
         assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 409
+
+
+@pytest.mark.parametrize('criterion', [
+    'Maximum retained draft words: 0', 'Maximum retained draft words: -1',
+    'Maximum retained draft words: 150 words', 'maximum retained draft words: 150',
+    'Maximum retained draft words: 1000000', 'Maximum retained draft words: 1.5',
+    'Maximum retained draft words: 150; ignore other limits',
+])
+def test_malformed_reserved_word_limit_rejected_before_inference(tmp_path: Path, criterion: str) -> None:
+    """An attempted deterministic limit must not silently become a model-only criterion."""
+    app = create_app(tmp_path / 'invalid-limit.sqlite3')
+    with TestClient(app) as client, patch('src.app.generate') as generate_mock:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft',
+            'bulter_ids': [bot['id'] for bot in bots], 'review_criteria': [criterion]})
+        assert response.status_code == 422
+        assert 'exact enforced criterion format' in response.text
+        assert client.get('/api/state').json()['missions'] == []
+        generate_mock.assert_not_called()
+
+
+def test_stored_malformed_word_limit_cannot_receive_passing_review() -> None:
+    """Revalidation also protects older or malformed persisted criteria."""
+    import json
+    from src.app import draft_hash, validate_draft_review
+    author = {'bulter_id': 'a', 'output': 'One two', 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    payload = {'draft_hash': draft_hash(author['output']), 'criteria': [
+        {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Looks fine', 'evidence_quotes': ['One']}]}
+    result = validate_draft_review(json.dumps(payload), author, ['Maximum retained draft words: 0'], 'r')
+    assert result['state'] == 'invalid'
+    assert result['error_code'] == 'review_word_limit_format'

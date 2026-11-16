@@ -113,6 +113,10 @@ class MissionInput(StrictInput):
     @model_validator(mode="after")
     def partial_review_scope(self):
         """Partial handoffs are an explicit multi-agent reference workflow only."""
+        for criterion in self.review_criteria:
+            if (criterion.strip().casefold().startswith("maximum retained draft words")
+                    and not re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", criterion)):
+                raise ValueError("Use the exact enforced criterion format: Maximum retained draft words: 150 (an integer from 1 to 999999).")
         if self.review_partial_output and (len(self.bulter_ids) < 2 or self.attachment_mode != "reference"):
             raise ValueError("Partial-output review requires at least two Bulters in reference mode.")
         if self.sections and self.attachment_mode != "reference":
@@ -681,6 +685,10 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
         """Return actionable diagnostics without echoing model payloads or parser details."""
         return {**record, "error_code": code, "error": message, **positions}
 
+    for criterion in criteria:
+        if (criterion.strip().casefold().startswith("maximum retained draft words")
+                and not re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", criterion)):
+            return invalid("review_word_limit_format", "The retained word-limit criterion is malformed. Start a new mission with the exact enforced format.")
     try:
         payload = json.loads(output, object_pairs_hook=unique_json_fields)
     except json.JSONDecodeError:
