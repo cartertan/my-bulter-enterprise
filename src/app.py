@@ -880,6 +880,8 @@ def build_context(bot: dict, memories: list[dict], prompt: str, handoffs: list[d
 def output_budget_prompt(prompt: str, budget: int) -> str:
     """Tell the model its enforced output allowance without relaxing completeness."""
     return (prompt + f"\nOUTPUT ALLOWANCE: at most {budget} JSON-escaped characters, not tokens. "
+            "JSON-escaped describes internal size accounting only; it does not request JSON output. "
+            "Use the output format requested by the task, without adding serialization wrappers. "
             "Return a concise complete response within this allowance. Preserve required evidence and fields; "
             "avoid optional repetition. Never claim omitted work is complete.")
 

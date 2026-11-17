@@ -2495,3 +2495,14 @@ def test_invalid_scope_diagnostics_identify_the_input(tmp_path: Path, field: str
         assert f'Provide unique nonempty {label} of at most 1,000 characters each.' in response.text
         assert client.get('/api/state').json()['missions'] == []
         generate_mock.assert_not_called()
+
+
+def test_output_allowance_does_not_request_json_serialization() -> None:
+    """Internal accounting instructions preserve both prose and native schema tasks."""
+    from src.app import output_budget_prompt
+    for task in ['Write prose beginning with Consent.', 'Return the required slide JSON schema.']:
+        prompt = output_budget_prompt(task, 1200)
+        assert prompt.startswith(task)
+        assert 'at most 1200 JSON-escaped characters' in prompt
+        assert 'does not request JSON output' in prompt
+        assert 'Use the output format requested by the task' in prompt
