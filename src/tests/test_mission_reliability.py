@@ -513,6 +513,8 @@ def test_structured_review_mission_records_identity_and_keeps_acceptance_separat
         calls.append(messages[0]['content'])
         assert 'criterion-1' in calls[-1]
         if len(calls) == 1:
+            assert 'Do not add unrequested' in calls[-1]
+            assert 'preserve that exact schema' in calls[-1]
             assert 'CURRENT EXECUTION STAGE: AUTHOR.' in calls[-1]
             assert 'CURRENT EXECUTION STAGE: REVIEWER.' not in calls[-1]
             assert 'response_schema' not in kwargs['options']

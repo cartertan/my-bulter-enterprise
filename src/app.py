@@ -634,7 +634,11 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
         result += ('\nCURRENT EXECUTION STAGE: AUTHOR. Create the requested deliverable now. '
                    'The criteria above are requirements for your draft, not a request to score a prior draft. '
                    'No prior author output is needed. Do not output criterion verdicts, review JSON, '
-                   'reviewer analysis or an approval claim. A separate later call performs the review.')
+                   'reviewer analysis or an approval claim. A separate later call performs the review. '
+                   'Return the deliverable itself in the requested format. Do not add unrequested '
+                   'draft wrappers, compliance_notes, word_count_verification or self-assessment metadata. '
+                   'When a structured outline or Office edit schema is required, preserve that exact schema; '
+                   'do not replace it with plain prose or nest it inside a new wrapper.')
     return result
 
 
