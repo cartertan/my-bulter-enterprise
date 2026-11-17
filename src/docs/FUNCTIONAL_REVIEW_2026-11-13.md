@@ -38,3 +38,9 @@
 
 - Do not rely on model PASS results alone to approve a deliverable.
 - The app is suitable for further supervised functional testing; it is not yet established as a dependable autonomous presentation workflow.
+
+### Selected-preference follow-up — 17 November 2026
+
+- Fresh isolated Qwen/Granite run: the selected synthetic preference reached both calls, and fictional labeling plus consent-before-sharing appeared in the draft. Actual Obsidian personalization remains unverified.
+- The author added an unrequested JSON wrapper. The requested starting heading was inside its draft field; the reviewer incorrectly passed the literal starts-with requirement. This is partial preference compliance and a semantic false positive despite valid hash/quote binding.
+- App-measured retained count was 64, within maximum 150; both models claimed 42. Execution completed, acceptance remained not_assessed. Release gate now passes 734 tests, three JavaScript checks and 79 allowlisted files. No paid calls or private runtime publication.
