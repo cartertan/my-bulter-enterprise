@@ -942,3 +942,9 @@ The repository's permitted edit scope currently covers `src/` and `scripts/`. A 
 - Through Missions and the mission detail view, verified unresolved issues, invalid structured assessment and the JSON-format error alongside the independent app check showing five retained words / maximum four / exceeded. Acceptance was explicitly not assessed; only JSON export was offered, with no accepted deliverable established.
 - This closes the narrow browser disclosure check for measurements surviving an invalid review; it does not prove model compliance or full functional acceptance. The isolated server was stopped afterward. Validation-only slice; existing regression coverage was rerun rather than adding duplicate tests. Representative content and personalization remain open.
 - Release gate rerun: 728 tests, three JavaScript syntax checks and 79 allowlisted files pass; existing Starlette/httpx warning remains. No paid calls, private publication, merge, release or acceptance closure.
+
+### REV-001 field-specific input diagnostics: 17 November 2026
+
+- Invalid review criteria previously returned an instruction to fix section scopes, even when no sections were entered. The shared validator now names the offending field while preserving its existing uniqueness, trimming, nonempty and 1,000-character rules.
+- Six API regression cases cover blank, duplicate-after-trimming and oversized entries for both fields, verifying rejection before persistence or inference. No dependency added. Source diff reviewed; release gate passes 734 tests, three JavaScript checks and 79 allowlisted files, with the existing Starlette/httpx warning.
+- This is an input-diagnostic correction, not a semantic-review or complete-deliverable acceptance claim. No live models, paid calls, private publication, merge or release. Representative content and personalization remain open.

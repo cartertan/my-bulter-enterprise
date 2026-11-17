@@ -2477,3 +2477,19 @@ def test_invalid_review_measurements_survive_restart_and_revision(tmp_path: Path
         assert child['acceptance_status'] == 'not_assessed'
         assert child['steps'][1]['review']['deterministic_checks'][0]['actual'] == 2
         assert restored.state.store.get('mission', parent['id']) == parent
+
+
+@pytest.mark.parametrize('field,label', [('sections', 'section scopes'), ('review_criteria', 'review criteria')])
+@pytest.mark.parametrize('values', [[' '], ['Same', ' Same '], ['x' * 1001]])
+def test_invalid_scope_diagnostics_identify_the_input(tmp_path: Path, field: str, label: str, values: list[str]) -> None:
+    """Users receive the correct field guidance before persistence or inference."""
+    app = create_app(tmp_path / 'scope-errors.sqlite3')
+    with TestClient(app) as client, patch('src.app.generate') as generate_mock:
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Draft',
+            'bulter_ids': [bot['id'] for bot in bots], field: values})
+        assert response.status_code == 422
+        assert f'Provide unique nonempty {label} of at most 1,000 characters each.' in response.text
+        assert client.get('/api/state').json()['missions'] == []
+        generate_mock.assert_not_called()

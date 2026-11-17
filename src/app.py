@@ -29,7 +29,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationInfo, field_validator, model_validator
 
 from src.image_engine import engine_status
 from src.providers import PROVIDERS, ProviderError, OutputLimitError, discover, generate, is_cloud, is_image_model
@@ -164,11 +164,12 @@ class MissionInput(StrictInput):
 
     @field_validator("sections", "review_criteria")
     @classmethod
-    def bounded_sections(cls, values: list[str]) -> list[str]:
+    def bounded_sections(cls, values: list[str], info: ValidationInfo) -> list[str]:
         """Require explicit, unique scopes instead of silently splitting a brief."""
         scopes = [value.strip() for value in values]
         if any(not value or len(value) > 1000 for value in scopes) or len(set(scopes)) != len(scopes):
-            raise ValueError("Provide unique nonempty section scopes of at most 1,000 characters.")
+            label = "review criteria" if info.field_name == "review_criteria" else "section scopes"
+            raise ValueError(f"Provide unique nonempty {label} of at most 1,000 characters each.")
         return scopes
 
     @field_validator("bulter_ids")
