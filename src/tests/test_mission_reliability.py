@@ -2546,3 +2546,17 @@ def test_auto_layout_schema_enforces_flow_body_budget(images: list[str]) -> None
     assert not list(validator.iter_errors(outline))
     slide['body'] += 'x'
     assert list(validator.iter_errors(outline))
+
+
+@pytest.mark.parametrize('compose,sections', [(True, 0), (False, 3)])
+def test_layout_author_guidance_leaves_sentence_headroom(compose: bool, sections: int) -> None:
+    """Composition and section writers receive headroom guidance without changing review format."""
+    from src.app import timing_prompt
+    task = 'Explain identity attributes, not payments.'
+    prompt = timing_prompt(task, 300, True, compose, section_count=sections)
+    assert prompt.startswith(task)
+    assert 'aim below 300 characters' in prompt
+    assert 'not extra hard limits' in prompt
+    assert 'Put supporting detail in speaker_notes' in prompt
+    assert 'aim below 300 characters' not in timing_prompt(task, 300, False, compose, section_count=sections)
+    assert timing_prompt(task, None, True, compose, section_count=sections) == task

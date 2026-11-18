@@ -418,6 +418,11 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
         result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram."
                    if compose or section_count else "This is a draft outline, not a generated artifact.")
         if compose or section_count:
+            result += (" Write brief, complete slide-body sentences: aim below 300 characters with a diagram/picture "
+                       "or below 500 for text-only slides. These are drafting targets, not extra hard limits. "
+                       "Finish the thought well before the schema ceiling; never fill the field to its maximum. "
+                       "Put supporting detail in speaker_notes. Keep the requested subject and section scope; "
+                       "do not substitute a different meaning of an ambiguous term. ")
             result += (" Keep internal source IDs in structured claims/evidence, not titles, body, captions or flow labels. "
                        "Use source names in prose; the app adds citation links automatically.")
         if section_count and require_picture:
