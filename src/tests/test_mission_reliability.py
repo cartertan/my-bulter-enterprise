@@ -2506,3 +2506,20 @@ def test_output_allowance_does_not_request_json_serialization() -> None:
         assert 'at most 1200 JSON-escaped characters' in prompt
         assert 'does not request JSON output' in prompt
         assert 'Use the output format requested by the task' in prompt
+
+
+def test_scale_check_does_not_accept_incomplete_or_wrong_duration() -> None:
+    """A completed label or partial outline cannot satisfy the scale-check summary."""
+    from scripts.check_local_workflow import inspect_mission
+    import json
+    outline = {'slides': [{'slide_id': f'slide-{i}', 'title': 'Fictional', 'body': 'Example',
+        'speaker_notes': 'Synthetic', 'duration_seconds': 100} for i in range(3)], 'discussion_seconds': 0}
+    steps = [step for _ in range(6) for step in [{'output': json.dumps(outline)}, {'output': 'review'}]]
+    mission = {'status': 'completed', 'steps': steps, 'acceptance_status': 'not_assessed'}
+    assert inspect_mission(mission)['scale_checks_pass'] is True
+    assert inspect_mission(mission)['content_quality'] == 'not_assessed'
+    assert inspect_mission({**mission, 'steps': steps[:-2]})['scale_checks_pass'] is False
+    assert inspect_mission({**mission, 'status': 'completed_with_issues'})['scale_checks_pass'] is False
+    outline['discussion_seconds'] = 1
+    steps[0] = {'output': json.dumps(outline)}
+    assert inspect_mission(mission)['scale_checks_pass'] is False

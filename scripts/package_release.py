@@ -21,7 +21,7 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
-    "scripts/render_presentation.py",
+    "scripts/render_presentation.py", "scripts/check_local_workflow.py",
     "src/presentation_builder.py",
     "scripts/check_release.py", "src/tests/test_mission_reliability.py", "src/docs/REMEDIATION_PLAN.md",
     "src/docs/FUNCTIONAL_REVIEW_2026-11-13.md",
