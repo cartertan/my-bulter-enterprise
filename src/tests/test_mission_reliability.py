@@ -2193,7 +2193,7 @@ def test_picture_schema_requires_explicit_selected_asset_decision() -> None:
     outline = timed_outline(60, 0)
     assert list(validator.iter_errors(outline))
     slide = outline['slides'][0]
-    slide.update(image_id=None, image_caption='')
+    slide.update(image_id=None, image_caption='', flow_steps=[])
     assert not list(validator.iter_errors(outline))
     slide.update(image_id='invented', image_caption='Test')
     assert list(validator.iter_errors(outline))
@@ -2523,3 +2523,26 @@ def test_scale_check_does_not_accept_incomplete_or_wrong_duration() -> None:
     outline['discussion_seconds'] = 1
     steps[0] = {'output': json.dumps(outline)}
     assert inspect_mission(mission)['scale_checks_pass'] is False
+
+
+@pytest.mark.parametrize('images', [[], ['selected']])
+def test_auto_layout_schema_enforces_flow_body_budget(images: list[str]) -> None:
+    """A long text-only slide stays valid, but diagrams use the smaller body panel."""
+    from jsonschema import Draft202012Validator
+    from src.app import author_response_schema
+    schema = author_response_schema(True, image_ids=images)
+    assert schema['$defs']['TimedSlide']['required'][0] == 'flow_steps'
+    assert schema['$defs']['FlowSlide']['required'][0] == 'flow_steps'
+    assert next(iter(schema['$defs']['FlowSlide']['properties'])) == 'flow_steps'
+    assert next(iter(schema['$defs']['TimedSlide']['properties'])) == 'flow_steps'
+    validator = Draft202012Validator(schema)
+    outline = timed_outline(60, 0)
+    slide = outline['slides'][0]
+    slide.update(image_id=None, image_caption='', body='x' * 700, flow_steps=[])
+    assert not list(validator.iter_errors(outline))
+    slide['flow_steps'] = ['Request', 'Approve']
+    assert list(validator.iter_errors(outline))
+    slide['body'] = 'x' * 420
+    assert not list(validator.iter_errors(outline))
+    slide['body'] += 'x'
+    assert list(validator.iter_errors(outline))

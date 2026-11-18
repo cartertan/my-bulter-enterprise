@@ -361,6 +361,29 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
         slide['properties']['body']['maxLength'] = PANEL_BODY_LIMIT
         slide['required'] = list(dict.fromkeys([*slide['required'], 'flow_steps']))
         schema['properties']['slides']['items'] = {'$ref': '#/$defs/TimedSlide'}
+    if compose and visual == 'auto':
+        # Auto layout still needs distinct text/flow budgets; a 700-character body
+        # cannot share a panel with a diagram. Preserve text-only capacity.
+        plain = schema['$defs']['TimedSlide']
+        plain['properties']['image_id'] = {'type': 'null'}
+        plain['properties']['image_caption'] = {'type': 'string', 'const': ''}
+        flow = json.loads(json.dumps(plain))
+        flow['properties']['body']['maxLength'] = PANEL_BODY_LIMIT
+        flow['properties']['flow_steps'].update(minItems=2, maxItems=5)
+        # Select the layout before emitting body text so grammar cannot strand a
+        # long text-only body at a subsequently requested diagram field.
+        flow['required'] = ['flow_steps', *[key for key in flow['required'] if key != 'flow_steps']]
+        plain['required'] = ['flow_steps', *[key for key in plain['required'] if key != 'flow_steps']]
+        plain['properties']['flow_steps']['maxItems'] = 0
+        for choice in (plain, flow):
+            properties = choice['properties']
+            choice['properties'] = {'flow_steps': properties['flow_steps'],
+                                    **{key: value for key, value in properties.items() if key != 'flow_steps'}}
+        schema['$defs']['FlowSlide'] = flow
+        choices = [{'$ref': '#/$defs/TimedSlide'}, {'$ref': '#/$defs/FlowSlide'}]
+        if image_ids:
+            choices.append({'$ref': '#/$defs/PictureSlide'})
+        schema['properties']['slides']['items'] = {'anyOf': choices}
     return schema
 
 
