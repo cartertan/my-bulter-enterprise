@@ -2560,3 +2560,21 @@ def test_layout_author_guidance_leaves_sentence_headroom(compose: bool, sections
     assert 'Put supporting detail in speaker_notes' in prompt
     assert 'aim below 300 characters' not in timing_prompt(task, 300, False, compose, section_count=sections)
     assert timing_prompt(task, None, True, compose, section_count=sections) == task
+
+
+def test_scale_fixture_preserves_identity_consent_scope() -> None:
+    """The scale harness sends specific consent/content criteria through normal API validation."""
+    from scripts.check_local_workflow import mission_payload
+    from src.app import MissionInput
+    bots = ['author', 'reviewer']
+    payload = mission_payload(bots)
+    parsed = MissionInput.model_validate(payload)
+    assert len(parsed.review_criteria) == 3
+    assert 'holder approves those specific attributes' in parsed.prompt
+    assert 'permission to distribute the presentation' in parsed.review_criteria[1]
+    assert 'unfinished clause' in parsed.review_criteria[2]
+    payload['sections'].clear()
+    bots.clear()
+    fresh = mission_payload(['author', 'reviewer'])
+    assert len(fresh['sections']) == 6
+    assert parsed.bulter_ids == ['author', 'reviewer']

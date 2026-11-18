@@ -24,6 +24,19 @@ SCOPES = ["Request and purpose", "Attribute selection", "Explicit approval",
           "Sharing and minimization", "Refusal and recovery", "Audit and limitations"]
 
 
+def mission_payload(bots: list[str]) -> dict:
+    """Use explicit identity-disclosure semantics rather than an ambiguous wallet brief."""
+    return {
+        'prompt': 'Create an explicitly fictional digital identity wallet workflow. A holder selects identity attributes (for example an age-over-18 assertion) for a requesting verifier. Consent means the holder approves those specific attributes for that verifier and purpose before disclosure. Refusal sends no attributes. This is not a payment wallet, financial transfer, login tutorial, or approval to distribute this presentation. Each section needs three substantive slides with speaker notes explaining operation, failure handling and limitations. Keep bodies concise and complete. Do not claim real deployments or research. Follow the native outline schema.',
+        'bulter_ids': list(bots), 'sections': list(SCOPES), 'section_slide_counts': [3] * 6,
+        'duration_budget_seconds': 1800, 'expected_slide_count': 18,
+        'exact_duration_seconds': 1800, 'slide_duration_seconds': 100,
+        'review_criteria': [
+            'The section is explicitly fictional and explains its assigned identity-attribute disclosure scope, not payment transfers or a login tutorial.',
+            'Any approval or refusal described concerns the holder disclosing selected identity attributes to a verifier for a stated purpose, not permission to distribute the presentation.',
+            'Every slide body contains complete sentences or complete concise bullet points, with no cut-off word or unfinished clause.']}
+
+
 def inspect_mission(mission: dict) -> dict:
     """Independently count retained outlines; never convert model PASS into acceptance."""
     slides, seconds, invalid = 0, 0, 0
@@ -68,12 +81,7 @@ def main() -> int:
                     'provider': 'ollama', 'model': model, 'thinking': 'off', 'output_tokens': 4096})
                 response.raise_for_status()
                 bots.append(response.json()['id'])
-            response = client.post('/api/missions', json={
-                'prompt': 'Create an explicitly fictional wallet workflow. Each section needs three substantive slides with speaker notes explaining the operation, failure handling and limitations. Do not claim real deployments or research. Follow the native outline schema.',
-                'bulter_ids': bots, 'sections': SCOPES, 'section_slide_counts': [3] * 6,
-                'duration_budget_seconds': 1800, 'expected_slide_count': 18,
-                'exact_duration_seconds': 1800, 'slide_duration_seconds': 100,
-                'review_criteria': ['The section explicitly describes a fictional flow and explains its assigned scope.']})
+            response = client.post('/api/missions', json=mission_payload(bots))
             response.raise_for_status()
             deadline = time.monotonic() + 660
             while True:
