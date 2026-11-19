@@ -296,6 +296,9 @@ def parse_presentation_outline(output: str) -> TimedPresentation:
         raise ValueError("Author outline is invalid. Return one JSON object with the required slide fields, unique slide IDs, positive integer speaking durations and nonnegative discussion; no extra or duplicate fields.") from exc
 
 
+COMPOSE_NOTES_LIMIT = 1000
+
+
 def author_response_schema(compose: bool, expected_slide_count: int | None = None, source_ids: list[str] | None = None,
                            sources: list[dict] | None = None, slide_duration_seconds: int | None = None,
                            image_ids: list[str] | None = None, visual: str = "auto") -> dict:
@@ -308,6 +311,10 @@ def author_response_schema(compose: bool, expected_slide_count: int | None = Non
         fields = schema["$defs"]["TimedSlide"]["properties"]
         fields["title"]["maxLength"] = TITLE_LIMIT
         fields["body"]["maxLength"] = BODY_LIMIT
+        # Reserve room for the other slides and reviewer handoff instead of
+        # allowing three 4,000-character note fields to consume the whole draft.
+        # This constrains new generation only; retained outlines are not trimmed.
+        fields["speaker_notes"]["maxLength"] = COMPOSE_NOTES_LIMIT
         fields["flow_steps"]["items"]["maxLength"] = FLOW_LABEL_LIMIT
     if expected_slide_count is not None:
         schema["properties"]["slides"].update(minItems=expected_slide_count, maxItems=expected_slide_count)
@@ -421,7 +428,11 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
             result += (" Write brief, complete slide-body sentences: aim below 300 characters with a diagram/picture "
                        "or below 500 for text-only slides. These are drafting targets, not extra hard limits. "
                        "Finish the thought well before the schema ceiling; never fill the field to its maximum. "
-                       "Put supporting detail in speaker_notes. Keep the requested subject and section scope; "
+                       "Put supporting detail in speaker_notes. Aim for 400–700 characters of notes per slide: "
+                       "one explanation of operation, one relevant failure case and one limitation. "
+                       f"Notes must stay within {COMPOSE_NOTES_LIMIT} characters; finish complete thoughts below that ceiling. "
+                       "Do not repeat or enumerate variations of the same limitation to fill space. "
+                       "Keep the requested subject and section scope; "
                        "do not substitute a different meaning of an ambiguous term. ")
             result += (" Keep internal source IDs in structured claims/evidence, not titles, body, captions or flow labels. "
                        "Use source names in prose; the app adds citation links automatically.")

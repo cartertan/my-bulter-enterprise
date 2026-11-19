@@ -2578,3 +2578,24 @@ def test_scale_fixture_preserves_identity_consent_scope() -> None:
     fresh = mission_payload(['author', 'reviewer'])
     assert len(fresh['sections']) == 6
     assert parsed.bulter_ids == ['author', 'reviewer']
+
+
+@pytest.mark.parametrize('visual', ['auto', 'flow', 'picture'])
+def test_composed_notes_leave_room_for_other_slides(visual: str) -> None:
+    """Every composed layout bounds new notes, without truncating historical outlines."""
+    from jsonschema import Draft202012Validator
+    from src.app import author_response_schema, parse_presentation_outline
+    schema = author_response_schema(True, image_ids=['selected'], visual=visual)
+    validator = Draft202012Validator(schema)
+    outline = timed_outline(60, 0)
+    slide = outline['slides'][0]
+    slide.update(speaker_notes='n' * 1000, flow_steps=['Request', 'Approve'] if visual == 'flow' else [],
+                 image_id='selected' if visual == 'picture' else None,
+                 image_caption='Selected illustration' if visual == 'picture' else '')
+    assert not list(validator.iter_errors(outline))
+    slide['speaker_notes'] += 'n'
+    assert list(validator.iter_errors(outline))
+    # Ordinary outlines and retained records keep their original 4,000 limit.
+    slide['speaker_notes'] = 'n' * 4000
+    assert not list(Draft202012Validator(author_response_schema(False)).iter_errors(outline))
+    assert parse_presentation_outline(json.dumps(outline)).slides[0].speaker_notes == 'n' * 4000
