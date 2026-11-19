@@ -971,7 +971,7 @@ def output_budget_prompt(prompt: str, budget: int) -> str:
 
 
 def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
-                         required_notes: list[dict] | None = None) -> list[int]:
+                         required_notes: list[dict] | None = None, reviewer_prompt: str | None = None) -> list[int]:
     """Reserve serialized draft space for every later reviewer before inference.
 
     This is a character guard, not a provider token estimate. Reserve 2,048
@@ -983,7 +983,8 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
         placeholders = [{"name": previous["name"], "output": "", "status": "partial"}
                         for previous in bots[:index]]
         # Reserve the longest supported allowance message before allocating draft space.
-        system, messages = build_context(bot, required_notes or [], output_budget_prompt(prompt, 16000),
+        stage_prompt = reviewer_prompt if index and reviewer_prompt is not None else prompt
+        system, messages = build_context(bot, required_notes or [], output_budget_prompt(stage_prompt, 16000),
                                          references + placeholders)
         if not index:
             continue
@@ -2192,8 +2193,22 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 if parent.get("compose_presentation"):
                     prompt += "x" * 1024
                 required_notes = [m for m in memories if m["id"] in parent.get("required_memory_ids", [])]
+                # Reviewer execution does not include author-only JSON examples,
+                # drafting instructions or the revision command. Reserve against
+                # its own prompt, retaining all feedback and check headroom.
+                reviewer_prompt = timing_prompt(section_prompt(parent['prompt'], scope),
+                    parent.get('duration_budget_seconds'), False, parent.get('compose_presentation', False),
+                    parent.get('expected_slide_count'), parent.get('exact_duration_seconds'),
+                    len(parent.get('sections', [])), section_slide_target(parent, section_index),
+                    parent.get('slide_duration_seconds'), parent.get('require_picture', False), section_visual(parent, section_index))
+                reviewer_prompt = source_prompt(reviewer_prompt, parent.get('source_register', []), parent.get('require_source_citations', False))
+                reviewer_prompt = criteria_prompt(reviewer_prompt, parent['review_criteria'], '0' * 64)
+                # Preserve the existing conservative reserves for app checks.
+                reviewer_prompt += 'x' * (1024 * (int(parent.get('duration_budget_seconds') is not None)
+                    + int(bool(parent.get('sections')) and parent.get('duration_budget_seconds') is not None)
+                    + int(bool(office_review)) + int(bool(parent.get('compose_presentation')))))
                 try:
-                    section_budgets.append(plan_handoff_budgets(bots, prompt, references, required_notes))
+                    section_budgets.append(plan_handoff_budgets(bots, prompt, references, required_notes, reviewer_prompt))
                 except ProviderError as exc:
                     raise HTTPException(400, "The complete revision feedback does not fit. Start a smaller-scoped mission; no content was omitted.") from exc
                 feedbacks.append(feedback)

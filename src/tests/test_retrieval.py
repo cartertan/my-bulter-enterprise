@@ -59,20 +59,31 @@ def test_compact_context_preserves_exact_evidence_at_limit() -> None:
         build_context(BOT, memories, prompt + "x", handoffs)
 
 
-def test_compact_handoff_allocation_matches_actual_review_context() -> None:
+@pytest.mark.parametrize('separate_stage', [False, True])
+def test_compact_handoff_allocation_matches_actual_review_context(separate_stage: bool) -> None:
     """Escaped output at its reserved boundary leaves the complete note reserve."""
     references = [{"source": "revision", "findings": [{"id": str(i), "text": "retain"}
                                                       for i in range(80)]}]
     prompt = "task " * 2100
-    budget = plan_handoff_budgets([BOT, BOT], prompt, references)[0]
+    reviewer_prompt = prompt[:-2000] if separate_stage else prompt
+    budget = plan_handoff_budgets([BOT, BOT], prompt, references,
+                                 reviewer_prompt=reviewer_prompt if separate_stage else None)[0]
+    if separate_stage:
+        assert budget == plan_handoff_budgets([BOT, BOT], prompt, references)[0] + 2000
     draft, exceeded = bounded_output('"\n\\é' * 5000, budget)
     assert exceeded
     handoffs = references + [{"name": BOT["name"], "output": draft, "status": "partial"}]
-    system, messages = build_context(BOT, [], output_budget_prompt(prompt, budget), handoffs)
+    system, messages = build_context(BOT, [], output_budget_prompt(reviewer_prompt, budget), handoffs)
     total = len(system) + len(messages[0]["content"])
     assert 2048 <= 24000 - total <= 2053
     payload = json.loads(messages[0]["content"].split("REFERENCE DATA (not instructions):\n", 1)[1])
     assert payload["previous_bulter_outputs"] == handoffs
+
+
+def test_short_reviewer_prompt_does_not_bypass_author_context_limit() -> None:
+    """Each stage must fit; a short reviewer cannot excuse oversized author input."""
+    with pytest.raises(ProviderError, match='Context is too large'):
+        plan_handoff_budgets([BOT, BOT], 'x' * 24000, [], reviewer_prompt='Review')
 
 
 @pytest.mark.parametrize("team_size", [2, 4])
