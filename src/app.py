@@ -1873,7 +1873,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         if step["status"] != "completed":
                             step["review"]["state"] = "invalid"
                         if author.get("timing_check", {}).get("state") in {"invalid", "exceeded"}:
-                            step["review"]["blocking_checks"] = ["presentation_timing"]
+                            step["review"].setdefault("blocking_checks", []).append("presentation_timing")
                             if step["review"]["state"] == "criteria_pass":
                                 step["review"]["state"] = "needs_revision"
                         if author.get("source_check", {}).get("state") == "invalid":

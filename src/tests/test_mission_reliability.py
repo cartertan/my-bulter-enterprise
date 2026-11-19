@@ -2615,7 +2615,8 @@ def test_cutoff_signal_does_not_equate_missing_period_with_failure(flow: bool, e
     assert outline_completion_risks('Ordinary prose ending with the') == []
 
 
-def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path) -> None:
+@pytest.mark.parametrize('overrun', [False, True])
+def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path, overrun: bool) -> None:
     """Exact quoted evidence cannot approve a suspected clipped section body."""
     from src.app import draft_hash
     app = create_app(tmp_path / 'cutoff.sqlite3')
@@ -2633,6 +2634,8 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path) -> N
             else:
                 outline['slides'][0].update(body=('Explicit consent ' + 'x' * 399 + ' the'),
                                             flow_steps=['Request', 'Approve'])
+                if overrun:
+                    outline['slides'][0]['duration_seconds'] = 180
             state['draft'] = json.dumps(outline)
             yield state['draft']
 
@@ -2648,6 +2651,8 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path) -> N
         review = parent['steps'][1]['review']
         assert review['state'] == 'needs_revision'
         assert review['slide_positions'] == [1]
+        assert 'suspected_body_cutoff' in review['blocking_checks']
+        assert ('presentation_timing' in review['blocking_checks']) is overrun
         assert parent['status'] == 'completed_with_issues'
         assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
         state['revision'] = True
