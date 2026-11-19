@@ -2599,3 +2599,60 @@ def test_composed_notes_leave_room_for_other_slides(visual: str) -> None:
     slide['speaker_notes'] = 'n' * 4000
     assert not list(Draft202012Validator(author_response_schema(False)).iter_errors(outline))
     assert parse_presentation_outline(json.dumps(outline)).slides[0].speaker_notes == 'n' * 4000
+
+
+@pytest.mark.parametrize('flow,ending,length,flagged', [
+    (True, ' the', 419, True), (True, ',', 418, True),
+    (False, ' when', 700, True), (True, ' identity', 420, False),
+    (True, '.', 420, False), (True, ' the', 300, False)])
+def test_cutoff_signal_does_not_equate_missing_period_with_failure(flow: bool, ending: str, length: int, flagged: bool) -> None:
+    """Require both ceiling proximity and an unfinished-ending signal."""
+    from src.app import outline_completion_risks
+    outline = timed_outline(60, 0)
+    outline['slides'][0].update(body='x' * (length - len(ending)) + ending,
+                                flow_steps=['Request', 'Approve'] if flow else [])
+    assert outline_completion_risks(json.dumps(outline)) == ([1] if flagged else [])
+    assert outline_completion_risks('Ordinary prose ending with the') == []
+
+
+def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path) -> None:
+    """Exact quoted evidence cannot approve a suspected clipped section body."""
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'cutoff.sqlite3')
+    state = {'revision': False, 'draft': ''}
+
+    async def stream(provider, model, system, messages, **kwargs):
+        if 'draft_hash' in kwargs['options']['response_schema']['properties']:
+            yield json.dumps({'draft_hash': draft_hash(state['draft']), 'criteria': [
+                {'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Complete',
+                 'evidence_quotes': ['Explicit consent']}]})
+        else:
+            outline = timed_outline(60, 0)
+            if state['revision']:
+                assert 'suspected_body_cutoff' in messages[0]['content']
+            else:
+                outline['slides'][0].update(body=('Explicit consent ' + 'x' * 399 + ' the'),
+                                            flow_steps=['Request', 'Approve'])
+            state['draft'] = json.dumps(outline)
+            yield state['draft']
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Wallet',
+            'bulter_ids': [b['id'] for b in bots], 'sections': ['Consent'],
+            'review_criteria': ['Complete bodies'], 'duration_budget_seconds': 120})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert parent['steps'][0]['layout_check']['state'] == 'pass'
+        review = parent['steps'][1]['review']
+        assert review['state'] == 'needs_revision'
+        assert review['slide_positions'] == [1]
+        assert parent['status'] == 'completed_with_issues'
+        assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
+        state['revision'] = True
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert app.state.store.get('mission', parent['id']) == parent

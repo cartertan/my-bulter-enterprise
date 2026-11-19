@@ -720,6 +720,24 @@ def draft_review_quotes(output: str) -> list[str]:
     return [line for line in output.splitlines() if any(char.isalnum() for char in line)]
 
 
+def outline_completion_risks(output: str) -> list[int]:
+    """Flag narrow ceiling-adjacent cutoff signals, not general grammatical quality."""
+    try:
+        outline = parse_presentation_outline(output)
+    except ValueError:
+        return []
+    positions = []
+    for position, slide in enumerate(outline.slides, 1):
+        ceiling = PANEL_BODY_LIMIT if slide.flow_steps or slide.image_id else BODY_LIMIT
+        body = slide.body.rstrip()
+        # A missing period alone is normal in slide bullets. Require both a
+        # near-full panel and an unfinished separator or English connecting word.
+        if ceiling - 8 <= len(body) <= ceiling and re.search(
+                r"(?:[,;:]|\b(?:a|an|the|to|when|and|or|with|for|if|because|of))$", body, re.I):
+            positions.append(position)
+    return positions
+
+
 def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str, artifact_paragraphs: list[str] | None = None) -> dict:
     """Fail closed on malformed, stale, forged or incomplete model assessments."""
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
@@ -780,6 +798,14 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
                                criterion_number=criterion_number, quotation_number=quote_number)
     record.update(state="criteria_pass" if all(item.result == "pass" for item in review.criteria) else "needs_revision",
                   criteria=[item.model_dump() for item in review.criteria])
+    risks = outline_completion_risks(author['output']) if artifact_paragraphs is None else []
+    if risks:
+        record.update(state="needs_revision", blocking_checks=["suspected_body_cutoff"],
+                      error_code="suspected_body_cutoff", slide_positions=risks,
+                      error="Possible unfinished slide bodies near the layout ceiling at slide positions "
+                            + ', '.join(map(str, risks))
+                            + ". Revise or inspect the complete thought; model PASS is insufficient. "
+                            "This conservative signal does not establish grammatical completeness elsewhere.")
     return record
 
 
