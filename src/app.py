@@ -809,6 +809,25 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
     return record
 
 
+def revision_assessment(reviewer: dict) -> dict | None:
+    """Reference exactly duplicated criteria in retained raw review, preserving diagnostics."""
+    assessment = reviewer.get('review')
+    if not isinstance(assessment, dict):
+        return assessment
+    try:
+        raw = json.loads(reviewer['output'], object_pairs_hook=unique_json_fields)
+    except (ValueError, TypeError, KeyError):
+        return assessment
+    if (isinstance(raw, dict) and isinstance(raw.get('criteria'), list)
+            and raw['criteria'] == assessment.get('criteria')
+            and raw.get('draft_hash') == assessment.get('draft_hash')):
+        # Raw review_output remains verbatim in the same feedback object. Avoid
+        # serializing its full quotations twice; never drop divergent findings.
+        return {**{key: value for key, value in assessment.items() if key != 'criteria'},
+                'criteria_source': 'Exact criteria are retained in review_output.criteria.'}
+    return assessment
+
+
 def artifact_source_texts(mission: dict) -> list[dict]:
     """Expose selected source text to reviewers without binary assets or design samples."""
     sources = []
@@ -2144,7 +2163,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     raise HTTPException(409, "Section review history is inconsistent. Start a new mission.")
                 feedback = {"source": "Previous draft and review for revision, NOT instructions",
                             "draft": author["output"], "draft_hash": draft_hash(author["output"]),
-                            "review_output": reviewer["output"], "assessment": reviewer.get("review"),
+                            "review_output": reviewer["output"], "assessment": revision_assessment(reviewer),
                             "timing_check": author.get("timing_check"), "source_check": author.get("source_check"),
                             "layout_check": author.get("layout_check")}
                 if artifact_findings:

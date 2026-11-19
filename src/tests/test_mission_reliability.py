@@ -2631,6 +2631,7 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path, over
             outline = timed_outline(60, 0)
             if state['revision']:
                 assert 'suspected_body_cutoff' in messages[0]['content']
+                assert 'Exact criteria are retained in review_output.criteria.' in messages[0]['content']
             else:
                 outline['slides'][0].update(body=('Explicit consent ' + 'x' * 399 + ' the'),
                                             flow_steps=['Request', 'Approve'])
@@ -2661,3 +2662,35 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path, over
         assert child['status'] == 'completed'
         assert child['acceptance_status'] == 'not_assessed'
         assert app.state.store.get('mission', parent['id']) == parent
+
+
+@pytest.mark.parametrize('variant', ['same', 'different', 'hash', 'invalid', 'duplicate'])
+def test_revision_assessment_preserves_all_distinct_evidence(variant: str) -> None:
+    """Only exact duplicated raw criteria can be represented by a reference."""
+    from copy import deepcopy
+    from src.app import revision_assessment
+    criteria = [{'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Claim',
+                 'evidence_quotes': ['Literal evidence']}]
+    raw = {'draft_hash': 'h', 'criteria': criteria}
+    assessment = {**deepcopy(raw), 'state': 'needs_revision',
+                  'blocking_checks': ['suspected_body_cutoff'], 'slide_positions': [1]}
+    if variant == 'different':
+        assessment['criteria'][0]['reason'] = 'Distinct finding'
+    if variant == 'hash':
+        assessment['draft_hash'] = 'other'
+    output = json.dumps(raw)
+    if variant == 'invalid':
+        output = 'not JSON'
+    if variant == 'duplicate':
+        output = output[:-1] + ', "criteria": []}'
+    reviewer = {'output': output, 'review': assessment}
+    before = deepcopy(reviewer)
+    result = revision_assessment(reviewer)
+    assert reviewer == before
+    if variant == 'same':
+        assert 'criteria' not in result
+        reconstructed = {key: value for key, value in result.items() if key != 'criteria_source'}
+        reconstructed['criteria'] = json.loads(output)['criteria']
+        assert reconstructed == assessment
+    else:
+        assert result == assessment
