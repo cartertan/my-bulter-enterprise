@@ -2707,3 +2707,16 @@ def test_cutoff_revision_guidance_uses_app_diagnostic_not_raw_review_text() -> N
     targeted = revision_instruction({'assessment': {'error_code': 'suspected_body_cutoff'}})
     assert 'Rewrite the flagged bodies' in targeted
     assert 'Preserve intended meaning, slide IDs, timings and source evidence' in targeted
+
+
+def test_reviewer_is_directed_to_check_conflicting_notes() -> None:
+    """Reviewer guidance distinguishes quote existence from criterion support."""
+    from src.app import criteria_prompt
+    task, criteria = 'Inspect the workflow', ['Claims and limitations are consistent.']
+    reviewer = criteria_prompt(task, criteria, 'a' * 64)
+    assert 'supporting and contradicting passages, including speaker notes' in reviewer
+    assert 'return fail and quote the conflicting passages' in reviewer
+    assert 'use unknown if the evidence cannot resolve it' in reviewer
+    assert 'Different scopes or an explicit limitation are not themselves contradictions' in reviewer
+    assert 'supporting and contradicting passages' not in criteria_prompt(task, criteria)
+    assert criteria_prompt(task, []) == task

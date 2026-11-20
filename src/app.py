@@ -667,7 +667,15 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
                    '"reason":"explanation", "evidence_quotes":["exact quotation from the author draft"]}]}. '
                    'Include every criterion exactly once. A pass requires a nonempty exact draft quotation. '
                    'Do not add agent identity or invent quotations. Draft quotations do not verify external facts. '
-                   'Missing evidence must be fail or unknown. Assess only the retained author draft.')
+                   'Missing evidence must be fail or unknown. Assess only the retained author draft. '
+                   'For each criterion, inspect both supporting and contradicting passages, including speaker notes. '
+                   'A quotation proves that text exists, not that the criterion is satisfied. '
+                   'Compare the same actor, action and stage: controls on initial disclosure do not imply '
+                   'control over later recipient use. Different scopes or an explicit limitation are not '
+                   'themselves contradictions. Identify the two incompatible claims before failing for inconsistency. '
+                   'If the draft contradicts a claim needed for that criterion, return fail and quote the conflicting '
+                   'passages; use unknown if the evidence cannot resolve it. Do not let a favorable body sentence '
+                   'override a conflicting limitation in the notes.')
     else:
         # Stage comes from orchestration, not a model's interpretation of role names or criteria.
         result += ('\nCURRENT EXECUTION STAGE: AUTHOR. Create the requested deliverable now. '
