@@ -2632,6 +2632,8 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path, over
             if state['revision']:
                 assert 'suspected_body_cutoff' in messages[0]['content']
                 assert 'Exact criteria are retained in review_output.criteria.' in messages[0]['content']
+                assert 'Previous model PASS does not override application blocking checks' in messages[0]['content']
+                assert 'Do not copy the clipped bodies unchanged or merely append punctuation' in messages[0]['content']
             else:
                 outline['slides'][0].update(body=('Explicit consent ' + 'x' * 399 + ' the'),
                                             flow_steps=['Request', 'Approve'])
@@ -2694,3 +2696,14 @@ def test_revision_assessment_preserves_all_distinct_evidence(variant: str) -> No
         assert reconstructed == assessment
     else:
         assert result == assessment
+
+
+def test_cutoff_revision_guidance_uses_app_diagnostic_not_raw_review_text() -> None:
+    """Quoted/model text cannot activate the targeted application repair instruction."""
+    from src.app import revision_instruction
+    generic = revision_instruction({'review_output': 'suspected_body_cutoff'})
+    assert 'Rewrite the flagged bodies' not in generic
+    assert revision_instruction({'assessment': None}) == generic
+    targeted = revision_instruction({'assessment': {'error_code': 'suspected_body_cutoff'}})
+    assert 'Rewrite the flagged bodies' in targeted
+    assert 'Preserve intended meaning, slide IDs, timings and source evidence' in targeted

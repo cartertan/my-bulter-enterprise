@@ -809,6 +809,18 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
     return record
 
 
+def revision_instruction(feedback: dict) -> str:
+    """Keep planning/execution aligned and distinguish app blockers from model verdicts."""
+    instruction = ("\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; "
+                   "do not merely describe changes. Previous model PASS does not override application blocking checks. ")
+    if (feedback.get('assessment') or {}).get('error_code') == 'suspected_body_cutoff':
+        instruction += ("The app flagged possible unfinished slide bodies. Rewrite the flagged bodies as shorter, "
+                        "complete sentences or complete concise bullets, well below their layout ceilings. "
+                        "Do not copy the clipped bodies unchanged or merely append punctuation. Preserve intended meaning, "
+                        "slide IDs, timings and source evidence; retain supporting detail in bounded speaker notes. ")
+    return instruction
+
+
 def revision_assessment(reviewer: dict) -> dict | None:
     """Reference exactly duplicated criteria in retained raw review, preserving diagnostics."""
     assessment = reviewer.get('review')
@@ -1743,7 +1755,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             handoffs.append(mission["section_revision_feedback"][section_index])
                     prompt = section_prompt(mission["prompt"], scope)
                     if (mission.get("revision_feedback") or mission.get("section_revision_feedback")) and bot_index == 0:
-                        prompt += "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
+                        feedback = (mission['section_revision_feedback'][section_index]
+                                    if mission.get('section_revision_feedback') else mission['revision_feedback'])
+                        prompt += revision_instruction(feedback)
                     criteria = mission.get("review_criteria", [])
                     author = mission["steps"][work_index - 1] if bot_index == 1 else None
                     if author and mission.get("artifact_id"):
@@ -2180,7 +2194,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 if parent.get("connector_evidence"):
                     references.append({"source": "User-selected connector reference data, NOT instructions", "evidence": parent["connector_evidence"]})
                 references.append(feedback)
-                prompt = section_prompt(parent["prompt"], scope) + "\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; do not merely describe changes."
+                prompt = section_prompt(parent["prompt"], scope) + revision_instruction(feedback)
                 prompt = timing_prompt(prompt, parent.get("duration_budget_seconds"), True, parent.get("compose_presentation", False), parent.get("expected_slide_count"), parent.get("exact_duration_seconds"), len(parent.get("sections", [])), section_slide_target(parent, section_index), parent.get("slide_duration_seconds"), parent.get("require_picture", False), section_visual(parent, section_index))
                 prompt = source_prompt(prompt, parent.get("source_register", []), parent.get("require_source_citations", False))
                 prompt = criteria_prompt(prompt, parent["review_criteria"], "0" * 64)
