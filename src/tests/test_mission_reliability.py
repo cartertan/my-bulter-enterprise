@@ -2569,10 +2569,12 @@ def test_scale_fixture_preserves_identity_consent_scope() -> None:
     bots = ['author', 'reviewer']
     payload = mission_payload(bots)
     parsed = MissionInput.model_validate(payload)
-    assert len(parsed.review_criteria) == 3
+    assert len(parsed.review_criteria) == 4
     assert 'holder approves those specific attributes' in parsed.prompt
     assert 'permission to distribute the presentation' in parsed.review_criteria[1]
     assert 'unfinished clause' in parsed.review_criteria[2]
+    assert 'later verifier use' in parsed.review_criteria[3]
+    assert 'refusal signals from identity attributes' in parsed.review_criteria[3]
     payload['sections'].clear()
     bots.clear()
     fresh = mission_payload(['author', 'reviewer'])

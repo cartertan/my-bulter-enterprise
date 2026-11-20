@@ -34,7 +34,8 @@ def mission_payload(bots: list[str]) -> dict:
         'review_criteria': [
             'The section is explicitly fictional and explains its assigned identity-attribute disclosure scope, not payment transfers or a login tutorial.',
             'Any approval or refusal described concerns the holder disclosing selected identity attributes to a verifier for a stated purpose, not permission to distribute the presentation.',
-            'Every slide body contains complete sentences or complete concise bullet points, with no cut-off word or unfinished clause.']}
+            'Every slide body contains complete sentences or complete concise bullet points, with no cut-off word or unfinished clause.',
+            'Claims must be consistent between bodies and speaker notes: distinguish initial attribute disclosure from later verifier use, and refusal signals from identity attributes.']}
 
 
 def inspect_mission(mission: dict) -> dict:
