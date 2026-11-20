@@ -422,7 +422,9 @@ def timing_prompt(prompt: str, budget: int | None, author: bool, compose: bool =
         result += ("\nReturn only JSON matching this structure: " + example
                    + ". Example values illustrate structure only; use the requested content and timings, not the sample values. "
                    "Use unique slide IDs and integer seconds. Include every planned slide and discussion. ")
-        result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram."
+        result += ("The app builds slide shapes from flow_steps; writing steps in body text alone does not create a diagram. "
+                   "Flow labels must name the correct actor and preserve the operation order described in the body/notes. "
+                   "Put prerequisites before dependent actions; do not turn a recipient into the requester."
                    if compose or section_count else "This is a draft outline, not a generated artifact.")
         if compose or section_count:
             result += (" Write brief, complete slide-body sentences: aim below 300 characters with a diagram/picture "
@@ -669,6 +671,8 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
                    'Do not add agent identity or invent quotations. Draft quotations do not verify external facts. '
                    'Missing evidence must be fail or unknown. Assess only the retained author draft. '
                    'For each criterion, inspect both supporting and contradicting passages, including speaker notes. '
+                   'For workflow consistency criteria, also inspect flow_steps in their listed order and image captions; '
+                   'check actors and prerequisites against the body/notes. Text review does not establish visual correctness. '
                    'A quotation proves that text exists, not that the criterion is satisfied. '
                    'Compare the same actor, action and stage: controls on initial disclosure do not imply '
                    'control over later recipient use. Different scopes or an explicit limitation are not '

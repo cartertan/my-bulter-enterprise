@@ -2569,12 +2569,13 @@ def test_scale_fixture_preserves_identity_consent_scope() -> None:
     bots = ['author', 'reviewer']
     payload = mission_payload(bots)
     parsed = MissionInput.model_validate(payload)
-    assert len(parsed.review_criteria) == 4
+    assert len(parsed.review_criteria) == 5
     assert 'holder approves those specific attributes' in parsed.prompt
     assert 'permission to distribute the presentation' in parsed.review_criteria[1]
     assert 'unfinished clause' in parsed.review_criteria[2]
     assert 'later verifier use' in parsed.review_criteria[3]
     assert 'refusal signals from identity attributes' in parsed.review_criteria[3]
+    assert 'holder reviews that purpose before approval' in parsed.review_criteria[4]
     payload['sections'].clear()
     bots.clear()
     fresh = mission_payload(['author', 'reviewer'])
@@ -2717,8 +2718,20 @@ def test_reviewer_is_directed_to_check_conflicting_notes() -> None:
     task, criteria = 'Inspect the workflow', ['Claims and limitations are consistent.']
     reviewer = criteria_prompt(task, criteria, 'a' * 64)
     assert 'supporting and contradicting passages, including speaker notes' in reviewer
+    assert 'inspect flow_steps in their listed order and image captions' in reviewer
     assert 'return fail and quote the conflicting passages' in reviewer
     assert 'use unknown if the evidence cannot resolve it' in reviewer
     assert 'Different scopes or an explicit limitation are not themselves contradictions' in reviewer
     assert 'supporting and contradicting passages' not in criteria_prompt(task, criteria)
     assert criteria_prompt(task, []) == task
+
+
+def test_flow_order_guidance_is_only_for_composed_authors() -> None:
+    """Workflow instructions affect drafting, without claiming rendered validation."""
+    from src.app import timing_prompt
+    for compose, sections in [(True, 0), (False, 1)]:
+        prompt = timing_prompt('Workflow', 300, True, compose, section_count=sections)
+        assert 'Flow labels must name the correct actor' in prompt
+        assert 'Put prerequisites before dependent actions' in prompt
+        assert 'Flow labels must' not in timing_prompt('Workflow', 300, False, compose, section_count=sections)
+    assert 'Flow labels must' not in timing_prompt('Workflow', 300, True)
