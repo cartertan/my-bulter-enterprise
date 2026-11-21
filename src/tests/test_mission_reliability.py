@@ -2719,6 +2719,9 @@ def test_reviewer_is_directed_to_check_conflicting_notes() -> None:
     reviewer = criteria_prompt(task, criteria, 'a' * 64)
     assert 'supporting and contradicting passages, including speaker notes' in reviewer
     assert 'inspect flow_steps in their listed order and image captions' in reviewer
+    assert 'quote the actual ordered flow_steps array' in reviewer
+    assert 'refusal or failure paths need not perform the successful approval/disclosure sequence' in reviewer
+    assert 'Still flag contradictions within that branch' in reviewer
     assert 'return fail and quote the conflicting passages' in reviewer
     assert 'use unknown if the evidence cannot resolve it' in reviewer
     assert 'Different scopes or an explicit limitation are not themselves contradictions' in reviewer
@@ -2735,3 +2738,24 @@ def test_flow_order_guidance_is_only_for_composed_authors() -> None:
         assert 'Put prerequisites before dependent actions' in prompt
         assert 'Flow labels must' not in timing_prompt('Workflow', 300, False, compose, section_count=sections)
     assert 'Flow labels must' not in timing_prompt('Workflow', 300, True)
+
+
+@pytest.mark.parametrize('reversed_order', [False, True])
+def test_flow_evidence_preserves_native_array_order(reversed_order: bool) -> None:
+    """Canonical array evidence preserves labels and order across JSON formatting."""
+    from src.app import draft_hash, draft_review_quotes, validate_draft_review
+    outline = timed_outline(60, 0)
+    labels = ['Review "purpose"', 'Approve disclosure', 'Send évidence']
+    outline['slides'][0]['flow_steps'] = labels
+    draft = json.dumps(outline, ensure_ascii=True, indent=2)
+    canonical = json.dumps(labels, ensure_ascii=False)
+    assert canonical in draft_review_quotes(draft)
+    quote = json.dumps(list(reversed(labels)), ensure_ascii=False) if reversed_order else canonical
+    author = {'bulter_id': 'a', 'output': draft, 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    output = json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{
+        'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Ordered flow', 'evidence_quotes': [quote]}]})
+    result = validate_draft_review(output, author, ['Flow order matches purpose before approval.'], 'r')
+    assert result['state'] == ('invalid' if reversed_order else 'criteria_pass')
+    if reversed_order:
+        assert result['error_code'] == 'review_evidence'

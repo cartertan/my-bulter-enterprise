@@ -673,6 +673,10 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
                    'For each criterion, inspect both supporting and contradicting passages, including speaker notes. '
                    'For workflow consistency criteria, also inspect flow_steps in their listed order and image captions; '
                    'check actors and prerequisites against the body/notes. Text review does not establish visual correctness. '
+                   'When assessing flow order, quote the actual ordered flow_steps array, not only nearby prose. '
+                   'Native outline evidence may quote a JSON array of its exact flow labels in the original order. '
+                   'Compare each flow with its own branch and stated scope: refusal or failure paths need not '
+                   'perform the successful approval/disclosure sequence. Still flag contradictions within that branch. '
                    'A quotation proves that text exists, not that the criterion is satisfied. '
                    'Compare the same actor, action and stage: controls on initial disclosure do not imply '
                    'control over later recipient use. Different scopes or an explicit limitation are not '
@@ -717,6 +721,10 @@ def timed_review_texts(output: str) -> list[str]:
     texts = []
     for slide in outline.slides:
         texts.extend([slide.title, slide.body, slide.speaker_notes, slide.image_caption or "", *slide.flow_steps])
+        if slide.flow_steps:
+            # Preserve the ordered array as a native evidence projection, rather
+            # than forcing the reviewer to choose only disconnected labels.
+            texts.append(json.dumps(slide.flow_steps, ensure_ascii=False))
         for claim in slide.claims:
             texts.append(claim.text)
             texts.extend(citation.quote for citation in claim.evidence)
