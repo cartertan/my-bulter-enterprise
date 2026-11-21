@@ -1,0 +1,205 @@
+"""Render a hash-verified application PPTX into local review evidence.
+
+Inputs: Exported PPTX, expected artifact SHA-256, new private output directory.
+Outputs: PDF, per-slide PNGs and a hash-bound JSON report; no acceptance verdict.
+Assumptions: LibreOffice and pdftoppm are installed locally. No network or model
+calls are made by this script. Review only trusted, validated Office packages.
+Author: Carter Tan.
+"""
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import unicodedata
+
+import pdfplumber
+from PIL import Image
+from pptx import Presentation
+import io
+
+# Support the documented direct invocation from any working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.attachments import office_paragraphs
+
+LOGGER = logging.getLogger(__name__)
+
+
+def slide_text_fragments(shapes) -> list[str]:
+    """Collect editable slide text, including groups/tables, excluding notes."""
+    fragments = []
+    for shape in shapes:
+        if shape.has_text_frame:
+            fragments.extend(p.text for p in shape.text_frame.paragraphs if p.text.strip())
+        if shape.has_table:
+            fragments.extend(cell.text for row in shape.table.rows for cell in row.cells if cell.text.strip())
+        if shape.shape_type == 6:  # PowerPoint group; children have their own text frames.
+            fragments.extend(slide_text_fragments(shape.shapes))
+    return fragments
+
+
+def text_presence(expected: list[str], rendered: str) -> dict:
+    """Flag missing extracted text without claiming layout or semantic correctness."""
+    def normalize(value: str) -> str:
+        return ''.join(unicodedata.normalize('NFKC', value).split())
+    actual = normalize(rendered)
+    missing = [fragment for fragment in expected if normalize(fragment) not in actual]
+    # These markers can also be literal text; flag a possible extraction problem, not a diagnosis.
+    cid_markers = len(re.findall(r'\(cid:\d+\)', rendered))
+    replacements = rendered.count('\ufffd')
+    return {'state': 'needs_review' if missing else ('present' if expected else 'not_assessed'),
+            'expected_fragments': len(expected), 'missing_fragments': missing,
+            'extraction_warnings': ['possible_unmapped_glyphs'] if cid_markers or replacements else [],
+            'cid_marker_count': cid_markers, 'replacement_character_count': replacements}
+
+
+def independent_text_check(pdf: Path, expected_pages: list[list[str]]) -> dict:
+    """Cross-check flagged PDF text with Poppler without clearing primary findings."""
+    extractor = shutil.which('pdftotext')
+    if not extractor:
+        return {'state': 'unavailable', 'reason': 'pdftotext_not_installed'}
+    try:
+        # Content-stream order keeps a paragraph together when adjacent panels share rows.
+        # Primary geometric extraction remains authoritative for the report's warning state.
+        result = subprocess.run([extractor, '-enc', 'UTF-8', '-raw', str(pdf), '-'],
+                                check=True, capture_output=True, timeout=120)
+        text = result.stdout.decode('utf-8', errors='strict')
+        pages = text.split('\f')
+        # Poppler appends a page terminator; preserve actual empty interior pages.
+        if pages and not pages[-1].strip():
+            pages.pop()
+        if len(pages) != len(expected_pages):
+            return {'state': 'unavailable', 'reason': 'page_count_mismatch'}
+        return {'state': 'complete', 'extractor': 'pdftotext', 'ordering': 'content_stream',
+                'pages': [text_presence(expected, page) for expected, page in zip(expected_pages, pages)]}
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        # Secondary diagnostics must not hide or replace the original render report.
+        return {'state': 'unavailable', 'reason': 'extraction_failed'}
+
+
+def render_presentation(source: Path, expected_sha256: str, output: Path,
+                        font_config: Path | None = None, font_dir: Path | None = None) -> dict:
+    """Create fresh render evidence; reject stale hashes and incomplete page sets."""
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_sha256:
+        raise ValueError('Input does not match the expected artifact SHA-256.')
+    office_paragraphs(data, 'artifact.pptx')
+    deck = Presentation(io.BytesIO(data))
+    slide_count = len(deck.slides)
+    if not slide_count:
+        raise ValueError('The presentation has no slides.')
+    renderer, rasterizer = shutil.which('soffice'), shutil.which('pdftoppm')
+    if not renderer or not rasterizer:
+        raise ValueError('Local LibreOffice (soffice) and pdftoppm are required.')
+    if (font_config is None) != (font_dir is None):
+        raise ValueError('Supply both an existing Fontconfig configuration and font directory.')
+    if font_config is not None:
+        font_config, font_dir = font_config.resolve(strict=True), font_dir.resolve(strict=True)
+        if not font_config.is_file() or not font_dir.is_dir():
+            raise ValueError('Font configuration must be a file and fonts must be a directory.')
+    # Never reuse prior evidence or overwrite a user's files, even on retry.
+    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    output = output.resolve()
+    local_source = output / 'artifact.pptx'
+    local_source.write_bytes(data)
+    profile = output / 'office-profile'
+    render_options = {}
+    if font_config is not None:
+        # Keep fonts in their original licensed installation. Only this renderer
+        # process sees the existing configuration and private XDG lookup/cache paths.
+        font_data = output / 'font-data'
+        font_data.mkdir(mode=0o700)
+        (font_data / 'fonts').symlink_to(font_dir, target_is_directory=True)
+        font_cache = output / 'font-cache'
+        font_cache.mkdir(mode=0o700)
+        render_options['env'] = {**os.environ, 'FONTCONFIG_FILE': str(font_config),
+            'FONTCONFIG_PATH': str(font_config.parent), 'XDG_DATA_HOME': str(font_data),
+            'XDG_CACHE_HOME': str(font_cache)}
+    subprocess.run([renderer, f'-env:UserInstallation={profile.as_uri()}', '--headless',
+                    '--convert-to', 'pdf', '--outdir', str(output), str(local_source)],
+                   check=True, capture_output=True, timeout=120, **render_options)
+    pdf = output / 'artifact.pdf'
+    if not pdf.is_file() or not pdf.read_bytes().startswith(b'%PDF-'):
+        raise ValueError('Renderer did not produce a valid PDF.')
+    with pdfplumber.open(pdf) as document:
+        page_count = len(document.pages)
+        extracted = [page.extract_text() or "" for page in document.pages]
+        rendered_fonts = sorted({char['fontname'] for page in document.pages
+                                 for char in getattr(page, 'chars', []) if char.get('fontname')})
+    if page_count != slide_count:
+        raise ValueError('Rendered page count does not match the source slide count.')
+    subprocess.run([rasterizer, '-png', '-r', '120', str(pdf), str(output / 'slide')],
+                   check=True, capture_output=True, timeout=120)
+    pages = []
+    for number in range(1, slide_count + 1):
+        # Poppler pads page numbers to the total page count's digit width.
+        path = output / f'slide-{number:0{len(str(slide_count))}d}.png'
+        if not path.is_file() or not path.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+            raise ValueError('A rendered slide image is missing or invalid.')
+        image_bytes = path.read_bytes()
+        # A PNG signature alone also accepts truncated or corrupt raster output.
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                image.verify()
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                image.load()
+                dimensions = list(image.size)
+        except (OSError, SyntaxError) as exc:
+            raise ValueError('A rendered slide image cannot be decoded.') from exc
+        pages.append({'slide': number, 'file': path.name, 'sha256': hashlib.sha256(image_bytes).hexdigest(),
+                      'dimensions': dimensions,
+                      'text_presence': text_presence(slide_text_fragments(deck.slides[number - 1].shapes), extracted[number - 1])})
+    report = {'artifact_sha256': digest, 'pdf_sha256': hashlib.sha256(pdf.read_bytes()).hexdigest(),
+              'slide_count': slide_count, 'pages': pages, 'render_status': 'complete',
+              'text_presence': 'needs_review' if any(page['text_presence']['state'] == 'needs_review' for page in pages) else 'no_missing_fragments_detected',
+              'visual_inspection': 'pending', 'user_acceptance': 'not_assessed'}
+    report['rendered_font_names'] = rendered_fonts
+    report['custom_font_environment'] = font_config is not None
+    if any(page['text_presence']['state'] == 'needs_review' or page['text_presence']['extraction_warnings'] for page in pages):
+        report['independent_text_check'] = independent_text_check(
+            pdf, [slide_text_fragments(slide.shapes) for slide in deck.slides])
+        if report['independent_text_check']['state'] == 'complete':
+            for page, secondary in zip(pages, report['independent_text_check']['pages']):
+                primary_missing = page['text_presence']['missing_fragments']
+                secondary_missing = secondary['missing_fragments']
+                page['text_extraction_comparison'] = {
+                    'primary_missing_found_by_secondary': [text for text in primary_missing if text not in secondary_missing],
+                    'missing_in_both': [text for text in primary_missing if text in secondary_missing]}
+    (output / 'render-report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    return report
+
+
+def main() -> int:
+    """Render privately and log only outcome, never document text or command output."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source', type=Path)
+    parser.add_argument('--sha256', required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--font-config', type=Path, help='Existing trusted Fontconfig configuration; not modified.')
+    parser.add_argument('--font-dir', type=Path, help='Existing licensed font directory; used only by this render.')
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    try:
+        report = render_presentation(args.source, args.sha256, args.output, args.font_config, args.font_dir)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        LOGGER.error('Render evidence incomplete (%s); use a new output directory on retry.', type(exc).__name__)
+        return 1
+    LOGGER.info('Rendered %s slides. Visual inspection and acceptance remain pending.', report['slide_count'])
+    if report['text_presence'] == 'needs_review':
+        LOGGER.warning('Some slide text was not found in PDF extraction; inspect the private report.')
+        if any(page['text_presence'].get('extraction_warnings') for page in report['pages']):
+            LOGGER.warning('PDF extraction contains possible unmapped glyphs; compare the rendered pages before diagnosing missing content.')
+        if any(page.get('text_extraction_comparison', {}).get('primary_missing_found_by_secondary') for page in report['pages']):
+            LOGGER.warning('Independent PDF extraction found some flagged text; see the private comparison. Visual review remains required.')
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

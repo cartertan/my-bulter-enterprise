@@ -137,3 +137,117 @@ def test_linked_vault_is_rejected(tmp_path: Path) -> None:
         document = client.post("/api/documents?filename=test.txt", content=b"Test evidence").json()
         assert client.post(f"/api/documents/{document['id']}/approve").status_code == 400
         assert not list(actual.iterdir())
+
+
+def grouped_presentation(text: str = 'Nested consent step') -> bytes:
+    """Build a synthetic nested flow with text, a table and an empty connector."""
+    from pptx.util import Inches
+    from pptx.enum.shapes import MSO_CONNECTOR
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'Before group'
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'Issuer step'
+    nested = group.shapes.add_group_shape()
+    nested.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = text
+    table = slide.shapes.add_table(1, 2, 0, 0, Inches(2), Inches(1))
+    table.table.cell(0, 0).text, table.table.cell(0, 1).text = 'Holder', 'Verifier'
+    # PowerPoint permits graphic frames inside groups; reparent the synthetic table.
+    nested.shapes._spTree.insert_element_before(table._element, 'p:extLst')
+    group.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, 0, 0, Inches(1), Inches(1))
+    slide.shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = 'After group'
+    output = io.BytesIO()
+    deck.save(output)
+    return output.getvalue()
+
+
+def test_grouped_presentation_evidence_preserves_order() -> None:
+    """Grouped diagram labels and table cells are retained once in shape order."""
+    assert extract_text(grouped_presentation(), 'flow.pptx') == (
+        'Slide 1\nBefore group\nIssuer step\nNested consent step\nHolder | Verifier\nAfter group')
+
+
+def test_grouped_presentation_attachment_retains_evidence(tmp_path: Path) -> None:
+    """The public upload route must retain grouped source text in the reference snapshot."""
+    app = create_app(tmp_path / 'groups.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/attachments?filename=flow.pptx', content=grouped_presentation())
+        assert response.status_code == 200
+        attachment = app.state.store.get('attachment', response.json()['id'])
+        assert 'Nested consent step' in attachment['text']
+        assert 'Holder | Verifier' in attachment['text']
+
+
+def test_grouped_presentation_cannot_bypass_reference_limit() -> None:
+    """Nested text counts against the same attachment budget as top-level text."""
+    from src.attachments import MAX_REFERENCE, parse
+    with pytest.raises(ValueError):
+        parse(grouped_presentation('x' * (MAX_REFERENCE + 1)), 'flow.pptx')
+
+
+def nested_table_document(nested_text: str = 'Nested source evidence') -> bytes:
+    """Create nested Word table content surrounded by ordinary paragraph evidence."""
+    doc = Document()
+    doc.add_paragraph('Before table')
+    outer = doc.add_table(rows=1, cols=1)
+    cell = outer.cell(0, 0)
+    cell.paragraphs[0].text = 'Outer cell'
+    nested = cell.add_table(rows=1, cols=1)
+    nested.cell(0, 0).text = nested_text
+    cell.add_paragraph('After nested table')
+    doc.add_paragraph('After table')
+    output = io.BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
+def test_nested_word_table_evidence_is_not_omitted() -> None:
+    """Nested cell content is part of the uploaded source, in document order."""
+    text = extract_text(nested_table_document(), 'source.docx')
+    assert 'Nested source evidence' in text
+    assert text.index('Before table') < text.index('Outer cell') < text.index('Nested source evidence')
+    assert text.index('Nested source evidence') < text.index('After nested table') < text.index('After table')
+    assert text.count('Nested source evidence') == 1
+
+
+def test_nested_word_table_counts_toward_reference_budget() -> None:
+    """Nested content cannot evade the complete-source attachment limit."""
+    from src.attachments import parse, MAX_REFERENCE
+    with pytest.raises(ValueError, match='12,000'):
+        parse(nested_table_document('x' * (MAX_REFERENCE + 1)), 'source.docx')
+
+
+def test_nested_word_table_upload_snapshot_retains_evidence(tmp_path: Path) -> None:
+    """The authenticated upload path keeps nested evidence for later mission selection."""
+    app = create_app(tmp_path / 'nested-word.sqlite3')
+    with TestClient(app) as client:
+        client.headers['x-bulter-token'] = app.state.csrf
+        response = client.post('/api/attachments?filename=source.docx', content=nested_table_document())
+        assert response.status_code == 200
+        assert 'Nested source evidence' in app.state.store.get('attachment', response.json()['id'])['text']
+
+
+def test_excessive_word_table_nesting_is_rejected() -> None:
+    """Deep table trees fail explicitly instead of exhausting Python recursion."""
+    doc = Document()
+    container = doc
+    for _ in range(34):
+        container = container.add_table(rows=1, cols=1).cell(0, 0)
+    container.text = 'Deep synthetic evidence'
+    output = io.BytesIO()
+    doc.save(output)
+    with pytest.raises(ValueError, match='nesting exceeds'):
+        extract_text(output.getvalue(), 'deep.docx')
+
+
+
+def test_merged_word_cells_do_not_duplicate_nested_evidence() -> None:
+    """Repeated grid references to a merged cell must not multiply nested source text."""
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    merged = table.cell(0, 0).merge(table.cell(1, 1))
+    merged.add_table(rows=1, cols=1).cell(0, 0).text = 'Unique nested evidence'
+    output = io.BytesIO()
+    doc.save(output)
+    assert extract_text(output.getvalue(), 'merged.docx').count('Unique nested evidence') == 1

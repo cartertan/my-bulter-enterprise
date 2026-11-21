@@ -70,7 +70,11 @@ def read_notes(vault: Path, owners: set[str]) -> list[dict]:
                 source = props.get("source", "user")
                 if not isinstance(source, str) or len(source) > 200:
                     raise ValueError("Note source must be short text.")
+                category = props.get("category", "preference" if path.relative_to(vault).parts[0] == "20 Preferences" else "reference")
+                if category not in {"reference", "preference", "demo"}:
+                    raise ValueError("Note category must be reference, preference or demo.")
                 notes.append({"id": "obsidian-" + identifier, "title": title.strip(), "content": content,
+                              "category": category,
                               "owner_id": owner, "cloud_allowed": props["cloud_allowed"], "active": True,
                               "source_type": "obsidian", "source": source,
                               "source_path": str(path.relative_to(vault)),

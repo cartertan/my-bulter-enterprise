@@ -250,3 +250,37 @@ def test_transport_completion(payload: str, error: str | None) -> None:
                 asyncio.run(collect())
         else:
             assert asyncio.run(collect()) == "Hello"
+
+
+def test_local_review_schema_transport_does_not_change_other_calls() -> None:
+    """Grammar parameters stay local and do not mutate persisted bot options."""
+    from src.app import review_response_schema
+    options = {'output_tokens': 1024, 'response_schema': review_response_schema(['Consent'], 'a' * 64)}
+    _, _, body = request_spec('ollama', 'synthetic', 'System', [], options)
+    assert body['format'] == options['response_schema']
+    assert body['options']['temperature'] == 0 and body['stream'] is True
+    assert 'temperature' not in options
+    _, _, plain = request_spec('ollama', 'synthetic', 'System', [], {})
+    assert 'format' not in plain and 'temperature' not in plain['options']
+    _, _, other = request_spec('lmstudio', 'synthetic', 'System', [], options)
+    assert 'format' not in other and 'response_format' not in other
+    with pytest.raises(ProviderError):
+        request_spec('ollama', 'synthetic', 'System', [], {'response_schema': 'invalid'})
+
+
+def test_user_activated_dashboard_navigation(client: TestClient) -> None:
+    """External dashboard links may open; embedded or scripted API reads may not."""
+    headers = {'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate',
+               'sec-fetch-dest': 'document', 'sec-fetch-user': '?1'}
+    response = client.get('/', headers=headers)
+    assert response.status_code == 200
+    assert response.headers['x-frame-options'] == 'DENY'
+    assert "frame-ancestors 'none'" in response.headers['content-security-policy']
+    assert client.get('/api/state', headers=headers).status_code == 403
+    assert client.post('/', headers=headers).status_code == 403
+    assert client.get('/', headers={**headers, 'origin': 'https://attacker.example'}).status_code == 403
+    assert client.get('/', headers={**headers, 'host': 'attacker.example'}).status_code == 403
+    for key in ('sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user'):
+        assert client.get('/', headers={k: v for k, v in headers.items() if k != key}).status_code == 403
+    assert client.get('/', headers={**headers, 'sec-fetch-dest': 'iframe'}).status_code == 403
+    assert client.get('/', headers={**headers, 'sec-fetch-mode': 'cors'}).status_code == 403

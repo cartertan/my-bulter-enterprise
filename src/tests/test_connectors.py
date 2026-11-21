@@ -311,3 +311,61 @@ def test_unavailable_browser_and_upstream_error_redaction(setup):
     authorize_google(connector)
     r = client.post("/api/connectors/google/read", json={"kind": "gmail"})
     assert r.status_code == 400 and "private upstream" not in r.text
+
+
+def test_manual_source_provenance_is_retained_without_fetching(setup):
+    """Save explicit provenance and carry it into a mission without network retrieval."""
+    from datetime import datetime
+    from src.app import source_register
+    client, connector, _ = setup
+    payload = {'text': 'Explicit consent is required.', 'title': 'Synthetic issuer guidance',
+               'source_url': 'https://example.com/wallet'}
+    with patch('src.connectors.httpx.AsyncClient') as network:
+        response = client.post('/api/connectors/manual', json=payload)
+        network.assert_not_called()
+    assert response.status_code == 200
+    evidence = response.json()
+    assert evidence['content'] == payload['text'] and evidence['title'] == payload['title']
+    assert evidence['source_url'] == payload['source_url']
+    assert evidence['provenance'] == 'user_provided; page_not_fetched'
+    assert datetime.fromisoformat(evidence['created']).tzinfo is not None
+    assert evidence['local_only'] is True and evidence['truncated'] is False
+    register = source_register([], [evidence])
+    assert register[0]['recorded_at'] == evidence['created']
+    assert register[0]['source_url'] == payload['source_url']
+    assert 'retrieved_at' not in register[0]
+
+    async def stream(*args, **kwargs):
+        """Return synthetic output without a model request."""
+        yield 'Synthetic review'
+
+    bot = add_bot(client)
+    with patch('src.app.generate', stream):
+        response = client.post('/api/missions', json={'prompt': 'Review this excerpt',
+            'bulter_ids': [bot['id']], 'evidence_ids': [evidence['id']]})
+        assert response.status_code == 200
+        mission = wait_mission(client)
+    assert mission['source_register'] == register
+    assert mission['connector_evidence'][0] == evidence
+    assert mission['acceptance_status'] == 'not_assessed'
+
+
+@pytest.mark.parametrize('url', ['http://example.com', 'https://user:password@example.com',
+    'https://127.0.0.1/', 'https://localhost/', 'https://example.com:8443/', 'javascript:alert(1)'])
+def test_manual_provenance_rejects_unsafe_url_before_storage(setup, url):
+    """Reject unsupported provenance targets without reflecting values or saving evidence."""
+    client, connector, _ = setup
+    response = client.post('/api/connectors/manual', json={'text': 'Synthetic excerpt', 'source_url': url})
+    assert response.status_code == 400
+    assert url not in response.text
+    assert connector.store.all('connector_evidence') == []
+
+
+def test_manual_excerpt_remains_backward_compatible(setup):
+    """Existing text-only requests need no provenance metadata or new consent."""
+    client, _, _ = setup
+    response = client.post('/api/connectors/manual', json={'text': 'Synthetic excerpt'})
+    assert response.status_code == 200
+    evidence = response.json()
+    assert evidence['title'] == 'User-provided excerpt'
+    assert 'source_url' not in evidence and 'provenance' not in evidence
