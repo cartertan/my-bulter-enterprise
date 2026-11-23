@@ -782,15 +782,19 @@ def outline_consistency_risks(output: str) -> list[dict]:
          r'\bno data is sent if the holder (?:declines|refuses)\b',
          r'\b(?:verifier receives|wallet (?:sends|transmits)) (?:a |the )?refusal signal\b'),
         ('post_disclosure_control',
-         r'\b(?:holder maintains control over the attribute.s lifecycle|prevents later misuse of disclosed data)\b',
+         r"(?:the )?holder maintains control over the attribute['’]s lifecycle\b|"
+         r'(?:this distinction|consent binding) prevents later misuse of disclosed data\b',
          r'\b(?:may not be enforceable in practice|does not enforce purpose.bound use after disclosure)\b'),
     ]
     findings = []
     for kind, claim_pattern, limitation_pattern in patterns:
         sides = []
-        for pattern in [claim_pattern, limitation_pattern]:
-            sides.append([{'slide_position': p, 'field': field, 'start': match.start(),
-                           'end': match.end(), 'text': match.group(0)}
+        # Require a directly asserted sentence, not a phrase nested inside a
+        # rebuttal, instruction or quoted example. This intentionally narrows coverage.
+        asserted = r'(?:^\s*|[.!?\n]\s+)(?P<assertion>' + claim_pattern + r')'
+        for pattern in [asserted, r'(?P<assertion>' + limitation_pattern + r')']:
+            sides.append([{'slide_position': p, 'field': field, 'start': match.start('assertion'),
+                           'end': match.end('assertion'), 'text': match.group('assertion')}
                           for p, field, text in passages
                           if (match := re.search(pattern, text, re.I))])
         claims, limits = sides

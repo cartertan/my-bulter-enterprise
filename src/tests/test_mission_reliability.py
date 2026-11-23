@@ -2925,3 +2925,40 @@ def test_consistency_and_cutoff_blockers_both_reach_revision() -> None:
     assert result['blocking_checks'] == ['suspected_body_cutoff', 'suspected_outline_contradiction']
     instruction = revision_instruction({'assessment': result})
     assert 'shorter' in instruction and 'consistency_findings' in instruction
+
+
+@pytest.mark.parametrize('body', [
+    'It is false that no data is sent if the holder declines.',
+    'Do not claim that no data is sent if the holder declines.',
+    '"No data is sent if the holder declines" is an incorrect claim.',
+    'It is not true that the holder maintains control over the attribute\'s lifecycle.',
+    'Do not assume that the holder maintains control over the attribute\'s lifecycle.',
+    'The statement "the holder maintains control over the attribute\'s lifecycle" is misleading.',
+])
+def test_consistency_signal_does_not_block_explicit_rebuttals(body: str) -> None:
+    """Mentioning a false assertion to reject it must not be treated as endorsing it."""
+    from src.app import outline_consistency_risks
+    outline = timed_outline(60, 0)
+    outline['slides'][0].update(body=body, speaker_notes=(
+        'The verifier receives a refusal signal. Verifier compliance may not be enforceable in practice.'))
+    assert outline_consistency_risks(json.dumps(outline)) == []
+
+
+@pytest.mark.parametrize('claim', [
+    'No data is sent if the holder declines.',
+    'The holder maintains control over the attribute’s lifecycle.',
+    'This distinction prevents later misuse of disclosed data.',
+])
+def test_consistency_assertion_after_context_retains_exact_location(claim: str) -> None:
+    """A later direct assertion remains checked, with offsets into the unmodified field."""
+    from src.app import outline_consistency_risks
+    outline = timed_outline(60, 0)
+    body = 'This is a fictional workflow. ' + claim
+    outline['slides'][0].update(body=body, speaker_notes=(
+        'The verifier receives a refusal signal. Verifier compliance may not be enforceable in practice.'))
+    findings = outline_consistency_risks(json.dumps(outline))
+    assert len(findings) == 1
+    passage = findings[0]['passages'][0]
+    assert passage['field'] == 'body'
+    assert passage['start'] == len('This is a fictional workflow. ')
+    assert body[passage['start']:passage['end']] == passage['text'] == claim[:-1]
