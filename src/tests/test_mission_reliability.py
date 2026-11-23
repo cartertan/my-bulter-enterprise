@@ -2635,6 +2635,10 @@ def test_cutoff_false_pass_blocks_export_and_can_be_revised(tmp_path: Path, over
             if state['revision']:
                 assert 'suspected_body_cutoff' in messages[0]['content']
                 assert 'Exact criteria are retained in review_output.criteria.' in messages[0]['content']
+                references = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
+                feedback = next(item for item in references['previous_bulter_outputs'] if 'review_output' in item)
+                assert feedback['review_output'] == json.loads(parent['steps'][1]['output'])
+                assert feedback['review_output_sha256'] == draft_hash(parent['steps'][1]['output'])
                 assert 'Previous model PASS does not override application blocking checks' in messages[0]['content']
                 assert 'Do not copy the clipped bodies unchanged or merely append punctuation' in messages[0]['content']
             else:
@@ -3061,3 +3065,54 @@ def test_combined_only_revision_receives_bounded_consistency_repair_guidance() -
     ordinary = revision_instruction({**base, 'combined_section_consistency': []})
     assert 'Shorten repetitive speaker notes' not in ordinary
     assert 'revocation request' not in ordinary
+
+
+@pytest.mark.parametrize('variant', ['valid', 'malformed', 'duplicate', 'schema', 'array'])
+def test_revision_review_representation_preserves_values_or_exact_invalid_text(variant: str) -> None:
+    """Avoid repeated JSON string escaping without dropping evidence or normalizing strings."""
+    from src.app import revision_review_output
+    payload = {'draft_hash': 'a' * 64, 'criteria': [{
+        'criterion_id': 'criterion-1', 'result': 'pass',
+        'reason': 'Keep  double spaces\nand Unicode: évidence.',
+        'evidence_quotes': ['A "quoted" value\\path\nnext line']} ]}
+    output = json.dumps(payload, ensure_ascii=True, indent=4)
+    if variant == 'malformed':
+        output += ' trailing prose'
+    elif variant == 'duplicate':
+        output = output.replace('"result": "pass",', '"result": "fail", "result": "pass",')
+    elif variant == 'schema':
+        output = json.dumps({**payload, 'unrecognized': 'retain this finding'})
+    elif variant == 'array':
+        output = json.dumps([payload])
+    result = revision_review_output(output)
+    if variant == 'valid':
+        assert result == payload
+        assert json.loads(json.dumps(result)) == json.loads(output)
+        assert len(json.dumps({'review_output': result})) < len(json.dumps({'review_output': output}))
+    else:
+        assert result == output
+
+
+def test_revision_repeated_quotes_round_trip_without_changing_evidence() -> None:
+    """References preserve ordering, multiplicity and exact Unicode/escaped quote text."""
+    from copy import deepcopy
+    from src.app import revision_review_output
+    quote = 'Évidence with  spaces, "quotes", \\paths and\nnewlines. ' * 8
+    payload = {'draft_hash': 'a' * 64, 'criteria': [
+        {'criterion_id': f'criterion-{index}', 'result': 'fail', 'reason': 'Keep this reason.',
+         'evidence_quotes': [quote, 'Short', quote, 'Different long quote. ' * 10]}
+        for index in (1, 2)]}
+    output = json.dumps(payload, ensure_ascii=True, indent=4)
+    projected = revision_review_output(output)
+    reconstructed = deepcopy(projected)
+    sources = reconstructed.pop('evidence_quotes_by_id')
+    for criterion in reconstructed['criteria']:
+        criterion['evidence_quotes'] = [sources[item['quote_id']] if isinstance(item, dict) else item
+                                        for item in criterion['evidence_quotes']]
+    assert reconstructed == payload
+    assert json.loads(output) == payload
+    assert len(json.dumps(projected)) < len(json.dumps(payload))
+    assert projected['criteria'][0]['evidence_quotes'][1] == 'Short'
+    # Invalid schema stays verbatim even if long evidence repeats.
+    invalid = json.dumps({**payload, 'unknown': 'retain'})
+    assert revision_review_output(invalid) == invalid

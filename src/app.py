@@ -966,6 +966,28 @@ def revision_instruction(feedback: dict) -> str:
     return instruction
 
 
+def revision_review_output(output: str) -> dict | str:
+    """Use validated JSON values without nested string escaping; retain invalid text verbatim."""
+    try:
+        parsed = json.loads(output, object_pairs_hook=unique_json_fields)
+        DraftReview.model_validate(parsed)
+    except (ValueError, TypeError):
+        return output
+    # Share only exactly repeated long quotes; each reference resolves to unchanged text.
+    # Do not use a model dump, which could normalize original field values.
+    quotes = [quote for criterion in parsed['criteria'] for quote in criterion['evidence_quotes']]
+    repeated = list(dict.fromkeys(quote for quote in quotes if len(quote) > 100 and quotes.count(quote) > 1))
+    if repeated:
+        identifiers = {quote: f'quote-{index + 1}' for index, quote in enumerate(repeated)}
+        parsed['evidence_quotes_by_id'] = {identifier: quote for quote, identifier in identifiers.items()}
+        for criterion in parsed['criteria']:
+            criterion['evidence_quotes'] = [
+                {'quote_id': identifiers[quote]} if quote in identifiers else quote
+                for quote in criterion['evidence_quotes']]
+    # Parent retains exact raw output including formatting and escapes.
+    return parsed
+
+
 def revision_assessment(reviewer: dict) -> dict | None:
     """Reference exactly duplicated criteria in retained raw review, preserving diagnostics."""
     assessment = reviewer.get('review')
@@ -978,8 +1000,8 @@ def revision_assessment(reviewer: dict) -> dict | None:
     if (isinstance(raw, dict) and isinstance(raw.get('criteria'), list)
             and raw['criteria'] == assessment.get('criteria')
             and raw.get('draft_hash') == assessment.get('draft_hash')):
-        # Raw review_output remains verbatim in the same feedback object. Avoid
-        # serializing its full quotations twice; never drop divergent findings.
+        # review_output retains either validated JSON values or verbatim invalid text.
+        # Avoid repeating identical criteria; never drop divergent findings.
         return {**{key: value for key, value in assessment.items() if key != 'criteria'},
                 'criteria_source': 'Exact criteria are retained in review_output.criteria.'}
     return assessment
@@ -2331,7 +2353,10 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     raise HTTPException(409, "Section review history is inconsistent. Start a new mission.")
                 feedback = {"source": "Previous draft and review for revision, NOT instructions",
                             "draft": author["output"], "draft_hash": draft_hash(author["output"]),
-                            "review_output": reviewer["output"], "assessment": revision_assessment(reviewer),
+                            "review_output": revision_review_output(reviewer['output']),
+                            "review_output_sha256": draft_hash(reviewer['output']),
+                            "review_output_origin": 'Exact raw output retained in parent. Review quote_id references resolve to unchanged text in review_output.evidence_quotes_by_id; other strings are unchanged.',
+                            "assessment": revision_assessment(reviewer),
                             "timing_check": author.get("timing_check"), "source_check": author.get("source_check"),
                             "layout_check": author.get("layout_check")}
                 if artifact_findings:
