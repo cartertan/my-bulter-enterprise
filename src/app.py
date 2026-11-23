@@ -114,6 +114,9 @@ class MissionInput(StrictInput):
     def partial_review_scope(self):
         """Partial handoffs are an explicit multi-agent reference workflow only."""
         for criterion in self.review_criteria:
+            if (criterion.strip().casefold().startswith('native flow evidence')
+                    and not re.fullmatch(r'Native flow evidence: \S.*', criterion)):
+                raise ValueError('Use Native flow evidence: followed by a nonempty review requirement.')
             if (criterion.strip().casefold().startswith("maximum retained draft words")
                     and not re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", criterion)):
                 raise ValueError("Use the exact enforced criterion format: Maximum retained draft words: 150 (an integer from 1 to 999999).")
@@ -661,6 +664,13 @@ def criteria_prompt(prompt: str, criteria: list[str], reviewed_hash: str | None 
                    "in the entire retained draft, including headings, markup, JSON and appended verdicts. "
                    "It is not a count of visible slide text or speaking time. The app rejects a passing "
                    "review when this explicit limit is exceeded.")
+    if any(text.startswith('Native flow evidence: ') for text in criteria):
+        result += ('\nCriteria prefixed Native flow evidence: require, at native outline review, '
+                   'a full canonical JSON array quotation for every distinct nonempty flow_steps array '
+                   'in that draft, in the evidence_quotes of that criterion. Prose alone cannot pass. '
+                   'Assess the requirement after the prefix too; quoting arrays does not prove correctness. '
+                   'If there are no flows or more than eight distinct flows, use fail or unknown. '
+                   'This coverage guard applies to native draft review only, not rendered artifact review.')
     if reviewed_hash is not None:
         result += ('\nCURRENT EXECUTION STAGE: REVIEWER. The author has already run. '
                    'Assess its retained output; do not create a replacement deliverable. '
@@ -768,6 +778,10 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
         return {**record, "error_code": code, "error": message, **positions}
 
     for criterion in criteria:
+        if (criterion.strip().casefold().startswith('native flow evidence')
+                and not re.fullmatch(r'Native flow evidence: \S.*', criterion)):
+            return invalid('review_flow_evidence_format',
+                           'Use Native flow evidence: followed by a nonempty review requirement.')
         if (criterion.strip().casefold().startswith("maximum retained draft words")
                 and not re.fullmatch(r"Maximum retained draft words: [1-9][0-9]{0,5}", criterion)):
             return invalid("review_word_limit_format", "The retained word-limit criterion is malformed. Start a new mission with the exact enforced format.")
@@ -802,6 +816,22 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
         if item.result == "pass" and not item.evidence_quotes:
             return invalid("review_missing_evidence", "Each passing criterion requires an exact quotation from the retained draft.")
         criterion_number = int(item.criterion_id.split("-")[1])
+        if (item.result == 'pass' and artifact_paragraphs is None
+                and criteria[criterion_number - 1].startswith('Native flow evidence: ')):
+            try:
+                outline = parse_presentation_outline(author['output'])
+            except (ValueError, TypeError):
+                return invalid('review_flow_evidence', 'Native flow evidence requires a valid slide outline.',
+                               criterion_number=criterion_number)
+            required = {json.dumps(slide.flow_steps, ensure_ascii=False)
+                        for slide in outline.slides if slide.flow_steps}
+            # Check this criterion alone; another criterion's quotes cannot cover its gaps.
+            if not required or not required.issubset(set(item.evidence_quotes)):
+                return invalid('review_flow_evidence',
+                               'A passing native flow criterion must quote every distinct ordered flow array '
+                               'in full. Adjacent prose or individual labels do not establish coverage. '
+                               'Use fail or unknown if coverage cannot be supplied within eight quotations.',
+                               criterion_number=criterion_number)
         limit = re.fullmatch(r"Maximum retained draft words: ([1-9][0-9]{0,5})", criteria[criterion_number - 1])
         if limit:
             # Enforce only the explicit count contract, never infer a limit from arbitrary prose.

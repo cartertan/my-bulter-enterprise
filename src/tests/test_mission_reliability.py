@@ -2759,3 +2759,99 @@ def test_flow_evidence_preserves_native_array_order(reversed_order: bool) -> Non
     assert result['state'] == ('invalid' if reversed_order else 'criteria_pass')
     if reversed_order:
         assert result['error_code'] == 'review_evidence'
+
+
+@pytest.mark.parametrize('case,expected', [
+    ('prose', 'invalid'), ('partial', 'invalid'), ('reversed', 'invalid'),
+    ('all', 'criteria_pass'), ('duplicate_flow', 'criteria_pass'),
+    ('no_flow', 'invalid'), ('ordinary', 'invalid'), ('fail', 'needs_revision'),
+    ('unknown', 'needs_revision'), ('unprefixed', 'criteria_pass'),
+    ('artifact', 'criteria_pass'), ('other_criterion', 'invalid'),
+])
+def test_native_flow_criterion_requires_its_own_complete_evidence(case: str, expected: str) -> None:
+    """Only opted-in native passes require all arrays; evidence is not a semantic verdict."""
+    from src.app import draft_hash, validate_draft_review
+    outline = timed_outline(60, 0)
+    first = outline['slides'][0]
+    first['flow_steps'] = ['Request', 'Review', 'Approve']
+    second = dict(first, slide_id='slide-2', flow_steps=['Decline', 'Notify'])
+    outline['slides'].append(second)
+    if case == 'duplicate_flow':
+        second['flow_steps'] = first['flow_steps']
+    if case == 'no_flow':
+        first['flow_steps'] = second['flow_steps'] = []
+    draft = 'Explicit consent' if case in {'ordinary', 'artifact'} else json.dumps(outline)
+    arrays = list(dict.fromkeys(json.dumps(s['flow_steps']) for s in outline['slides'] if s['flow_steps']))
+    quotes = arrays if case in {'all', 'duplicate_flow'} else ['Explicit consent']
+    if case == 'partial':
+        quotes = arrays[:1]
+    if case == 'reversed':
+        quotes = [json.dumps(list(reversed(first['flow_steps']))), arrays[1]]
+    criterion = 'Native flow evidence: Actors and order match the stated branch.'
+    criteria = ['Actors and order match.'] if case == 'unprefixed' else [criterion]
+    verdicts = [{'criterion_id': 'criterion-1', 'result': case if case in {'fail', 'unknown'} else 'pass',
+                 'reason': 'Synthetic control', 'evidence_quotes': quotes}]
+    if case == 'other_criterion':
+        criteria.append('Other evidence')
+        verdicts.append(dict(verdicts[0], criterion_id='criterion-2', evidence_quotes=arrays))
+    author = {'bulter_id': 'a', 'output': draft, 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    result = validate_draft_review(json.dumps({'draft_hash': draft_hash(draft), 'criteria': verdicts}),
+                                   author, criteria, 'r', ['Explicit consent'] if case == 'artifact' else None)
+    assert result['state'] == expected
+    if expected == 'invalid':
+        assert result['error_code'] == 'review_flow_evidence'
+        assert result['criterion_number'] == 1
+
+
+@pytest.mark.parametrize('criterion', ['Native flow evidence:', 'native flow evidence: Review',
+                                      'Native flow evidence Review'])
+def test_native_flow_criterion_format_fails_closed(criterion: str) -> None:
+    """Malformed reserved contracts fail at admission and retained review validation."""
+    from src.app import MissionInput, validate_draft_review
+    with pytest.raises(ValueError, match='Native flow evidence:'):
+        MissionInput(prompt='Review', bulter_ids=['a', 'r'], review_criteria=[criterion])
+    author = {'bulter_id': 'a', 'output': 'draft', 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    assert validate_draft_review('{}', author, [criterion], 'r')['error_code'] == 'review_flow_evidence_format'
+
+
+def test_native_flow_false_pass_blocks_inspection_and_revision_preserves_parent(tmp_path: Path) -> None:
+    """Application gates reject prose-only PASS and allow a later fully evidenced review."""
+    from src.app import draft_hash
+    app = create_app(tmp_path / 'flow.sqlite3')
+    outline = timed_outline(60, 0)
+    labels = ['Request', 'Review', 'Approve']
+    outline['slides'][0]['flow_steps'] = labels
+    draft = json.dumps(outline)
+    state = {'revised': False}
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Replay a synthetic draft and alternate only the review evidence."""
+        if 'draft_hash' not in kwargs['options']['response_schema']['properties']:
+            if state['revised']:
+                assert 'review_flow_evidence' in messages[0]['content']
+            yield draft
+        else:
+            yield json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{
+                'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic',
+                'evidence_quotes': [json.dumps(labels) if state['revised'] else 'Explicit consent']}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Wallet',
+            'bulter_ids': [b['id'] for b in bots], 'sections': ['Consent'],
+            'review_criteria': ['Native flow evidence: Actors and order match.'],
+            'duration_budget_seconds': 120})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert parent['status'] == 'completed_with_issues'
+        assert parent['steps'][1]['review']['error_code'] == 'review_flow_evidence'
+        assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
+        state['revised'] = True
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['acceptance_status'] == 'not_assessed'
+        assert app.state.store.get('mission', parent['id']) == parent

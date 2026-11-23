@@ -36,7 +36,7 @@ def mission_payload(bots: list[str]) -> dict:
             'Any approval or refusal described concerns the holder disclosing selected identity attributes to a verifier for a stated purpose, not permission to distribute the presentation.',
             'Every slide body contains complete sentences or complete concise bullet points, with no cut-off word or unfinished clause.',
             'Claims must be consistent between bodies and speaker notes: distinguish initial attribute disclosure from later verifier use, and refusal signals from identity attributes.',
-            'Flow labels must match the body and notes in actor and order: the verifier requests attributes for a purpose; the holder reviews that purpose before approval; disclosure follows approval.']}
+            'Native flow evidence: Flow labels must match the body and notes in actor and order: the verifier requests attributes for a purpose; the holder reviews that purpose before approval; disclosure follows approval.']}
 
 
 def inspect_mission(mission: dict) -> dict:
