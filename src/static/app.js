@@ -382,6 +382,16 @@ function renderDetail() {
     if (timing.expected_slide_count != null || timing.exact_duration_seconds != null) panel.append(el('p', 'help', `Combined exact targets: ${timing.slide_count ?? 'unverified'}/${timing.expected_slide_count ?? 'unspecified'} slides · ${timing.total_seconds ?? 'unverified'}/${timing.exact_duration_seconds ?? 'unspecified'} seconds.`));
     if (timing.error) panel.append(el('p', 'error', timing.error));
   }
+  if (mission.section_consistency_check) {
+    const check = mission.section_consistency_check;
+    const result = check.state === 'no_signal' ? 'No supported conflict detected' : check.state === 'needs_revision' ? 'Possible conflict needs revision' : 'Could not verify section drafts';
+    panel.append(el('p', 'help', `Combined consistency: ${result}. This narrow check does not verify facts or establish acceptance.`));
+    for (const finding of check.findings || []) {
+      const subject = finding.kind === 'refusal_data_signal' ? 'refusal data and signaling' : 'post-disclosure control';
+      panel.append(el('p', 'error', `Possible contradiction in ${subject}:`));
+      for (const passage of finding.passages || []) panel.append(el('p', 'help', `${passage.section_id}, slide ${passage.slide_position}, ${passage.field === 'speaker_notes' ? 'speaker notes' : 'body'}: ${passage.text}`));
+    }
+  }
   if (mission.review_partial_output) panel.append(el('p', 'help', 'Partial-output review enabled: subsequent Bulters may inspect an incomplete draft.'));
   for (const source of mission.source_register || []) panel.append(el('p', 'help', `Source ${source.source_id}: ${source.title} · ${source.origin} · recorded ${source.recorded_at || 'date unavailable'} · SHA-256 ${source.content_sha256}`));
   renderMissionAttachments(mission, panel);

@@ -2962,3 +2962,86 @@ def test_consistency_assertion_after_context_retains_exact_location(claim: str) 
     assert passage['field'] == 'body'
     assert passage['start'] == len('This is a fictional workflow. ')
     assert body[passage['start']:passage['end']] == passage['text'] == claim[:-1]
+
+
+@pytest.mark.parametrize('section_count', [2, 3])
+def test_cross_section_conflicts_block_assembly_and_revise_with_paired_evidence(tmp_path: Path, section_count: int) -> None:
+    """Individually passing sections cannot hide conflicting claims in their combined deck."""
+    from src.app import draft_hash, assemble_section_outline
+    app = create_app(tmp_path / 'combined-consistency.sqlite3')
+    state = {'calls': 0, 'revision': False, 'draft': ''}
+    seen_revision = []
+
+    async def stream(provider, model, system, messages, **kwargs):
+        """Replay two distinct scopes and their model PASS reviews without inference."""
+        call = state['calls']
+        state['calls'] += 1
+        section = (call // 2) % section_count
+        if 'draft_hash' not in kwargs['options']['response_schema']['properties']:
+            outline = timed_outline(60, 0)
+            if section == 0:
+                body = ('The holder controls future wallet disclosures.' if state['revision']
+                        else "The holder maintains control over the attribute's lifecycle.")
+            elif section == 1:
+                body = 'Verifier compliance may not be enforceable in practice.'
+            else:
+                body = 'Unrelated synthetic section.'
+            outline['slides'][0].update(body=body, speaker_notes='Synthetic scope details.')
+            state['draft'] = json.dumps(outline)
+            if state['revision']:
+                if section < 2:
+                    seen_revision.append(messages[0]['content'])
+                    assert 'combined_section_consistency' in messages[0]['content']
+                    assert 'Revise only the current section' in messages[0]['content']
+                else:
+                    assert 'combined_section_consistency' not in messages[0]['content']
+            yield state['draft']
+        else:
+            yield json.dumps({'draft_hash': draft_hash(state['draft']), 'criteria': [{
+                'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic PASS',
+                'evidence_quotes': [json.loads(state['draft'])['slides'][0]['body']]}]})
+
+    with TestClient(app) as client, patch('src.app.generate', stream):
+        client.headers['x-bulter-token'] = app.state.csrf
+        bots = [add_bot(client, 'Author'), add_bot(client, 'Reviewer')]
+        response = client.post('/api/missions', json={'prompt': 'Synthetic control and limitations',
+            'bulter_ids': [b['id'] for b in bots], 'sections': ['Control', 'Limitations', 'Unrelated'][:section_count],
+            'review_criteria': ['Claims are consistent'], 'duration_budget_seconds': 60 * section_count})
+        assert response.status_code == 200
+        parent = wait_mission(client)
+        assert all(s['review']['state'] == 'criteria_pass' for s in parent['steps'][1::2])
+        assert parent['status'] == 'completed_with_issues'
+        check = parent['section_consistency_check']
+        assert check['state'] == 'needs_revision'
+        assert {p['section_id'] for p in check['findings'][0]['passages']} == {'section-1', 'section-2'}
+        assert client.get(f"/api/missions/{parent['id']}/outline/pptx").status_code == 409
+        with pytest.raises(ValueError, match='consistency'):
+            assemble_section_outline({**parent, 'status': 'completed',
+                                      'section_consistency_check': {'state': 'no_signal', 'findings': []}})
+        state['revision'] = True
+        assert client.post(f"/api/missions/{parent['id']}/revise", json={}).status_code == 200
+        child = wait_mission(client)
+        assert child['status'] == 'completed'
+        assert child['section_consistency_check'] == {'state': 'no_signal', 'findings': []}
+        assert len(seen_revision) == 2
+        assert child['acceptance_status'] == 'not_assessed'
+        assert app.state.store.get('mission', parent['id']) == parent
+        assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
+
+
+@pytest.mark.parametrize('fault', ['partial', 'missing', 'duplicate', 'invalid_json'])
+def test_combined_consistency_rejects_unverified_section_drafts(fault: str) -> None:
+    """Missing, repeated or incomplete authors cannot produce a clean combined signal."""
+    from src.app import validate_section_consistency
+    a = {'bulter_id': 'a', 'section_id': 'section-1', 'status': 'completed',
+         'output': json.dumps(timed_outline(60, 0))}
+    b = dict(a, section_id='section-2')
+    if fault == 'partial':
+        b['status'] = 'partial'
+    elif fault == 'duplicate':
+        b['section_id'] = 'section-1'
+    elif fault == 'invalid_json':
+        b['output'] = '{}'
+    mission = {'team': [{'id': 'a'}, {'id': 'r'}], 'sections': ['First', 'Second'],
+               'steps': [a] if fault == 'missing' else [a, b]}
+    assert validate_section_consistency(mission)['state'] == 'invalid'
