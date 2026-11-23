@@ -945,8 +945,10 @@ def revision_instruction(feedback: dict) -> str:
                         "complete sentences or complete concise bullets, well below their layout ceilings. "
                         "Do not copy the clipped bodies unchanged or merely append punctuation. Preserve intended meaning, "
                         "slide IDs, timings and source evidence; retain supporting detail in bounded speaker notes. ")
-    if 'suspected_outline_contradiction' in (feedback.get('assessment') or {}).get('blocking_checks', []):
-        instruction += ('Resolve the exact consistency_findings passages throughout bodies, notes and flow labels. '
+    if ('suspected_outline_contradiction' in (feedback.get('assessment') or {}).get('blocking_checks', [])
+            or feedback.get('combined_section_consistency')):
+        instruction += ('Resolve the recorded consistency_findings or combined_section_consistency passages '
+                        'throughout bodies, notes and flow labels. '
                         'Distinguish no identity attributes from no transmitted data when a refusal signal is sent. '
                         'Distinguish future wallet disclosure controls from guarantees over data already held by a verifier; '
                         'do not claim enforceable revocation or prevention of misuse when the stated limitation denies it. '

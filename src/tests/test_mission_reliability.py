@@ -3045,3 +3045,19 @@ def test_combined_consistency_rejects_unverified_section_drafts(fault: str) -> N
     mission = {'team': [{'id': 'a'}, {'id': 'r'}], 'sections': ['First', 'Second'],
                'steps': [a] if fault == 'missing' else [a, b]}
     assert validate_section_consistency(mission)['state'] == 'invalid'
+
+
+def test_combined_only_revision_receives_bounded_consistency_repair_guidance() -> None:
+    """A cross-section-only finding needs the same correction and output-fit guidance."""
+    from src.app import revision_instruction
+    base = {'assessment': {'state': 'criteria_pass'}}
+    targeted = revision_instruction({**base, 'combined_section_consistency': [{
+        'kind': 'post_disclosure_control', 'passages': []}]})
+    assert 'Return compact JSON without indentation' in targeted
+    assert 'Shorten repetitive speaker notes' in targeted
+    assert 'Preserve the limitations, slide IDs, timings and source evidence' in targeted
+    assert 'revocation request rather than guaranteed verifier deletion' in targeted
+    assert 'Revise only the current section' in targeted
+    ordinary = revision_instruction({**base, 'combined_section_consistency': []})
+    assert 'Shorten repetitive speaker notes' not in ordinary
+    assert 'revocation request' not in ordinary
