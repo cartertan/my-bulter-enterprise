@@ -2855,3 +2855,73 @@ def test_native_flow_false_pass_blocks_inspection_and_revision_preserves_parent(
         assert child['status'] == 'completed'
         assert child['acceptance_status'] == 'not_assessed'
         assert app.state.store.get('mission', parent['id']) == parent
+
+
+@pytest.mark.parametrize('kind', ['refusal', 'control'])
+def test_explicit_outline_conflicts_override_model_pass(kind: str) -> None:
+    """Two supported conflicting assertions block PASS; qualified repairs clear the signal."""
+    from src.app import draft_hash, outline_consistency_risks, validate_draft_review, revision_instruction
+    outline = timed_outline(60, 0)
+    slide = outline['slides'][0]
+    if kind == 'refusal':
+        slide['body'] = 'No data is sent if the holder declines.'
+        slide['speaker_notes'] = 'The verifier receives a refusal signal, not the identity attributes.'
+        corrected = 'No identity attributes are sent if the holder declines.'
+    else:
+        slide['body'] = "The holder maintains control over the attribute's lifecycle."
+        slide['speaker_notes'] = 'Verifier compliance may not be enforceable in practice.'
+        corrected = 'The holder controls future wallet disclosures; verifier compliance is not guaranteed.'
+    for repaired in [False, True]:
+        if repaired:
+            slide['body'] = corrected
+        draft = json.dumps(outline)
+        author = {'bulter_id': 'a', 'output': draft, 'status': 'completed',
+                  'section_id': 'section-1', 'draft_revision': 1}
+        result = validate_draft_review(json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{
+            'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic false PASS',
+            'evidence_quotes': [slide['body']]}]}), author, ['Consistent claims'], 'r')
+        assert result['state'] == ('criteria_pass' if repaired else 'needs_revision')
+        if not repaired:
+            assert result['error_code'] == 'suspected_outline_contradiction'
+            passages = result['consistency_findings'][0]['passages']
+            assert {p['field'] for p in passages} == {'body', 'speaker_notes'}
+            for passage in passages:
+                assert slide[passage['field']][passage['start']:passage['end']] == passage['text']
+            instruction = revision_instruction({'assessment': result})
+            assert 'Preserve the limitations, slide IDs, timings and source evidence' in instruction
+    assert outline_consistency_risks('Ordinary prose') == []
+
+
+def test_outline_conflicts_require_both_passages_across_slides() -> None:
+    """A limitation alone or a qualified data claim must not trigger this narrow check."""
+    from src.app import outline_consistency_risks
+    outline = timed_outline(60, 0)
+    first = outline['slides'][0]
+    first.update(body='No data is sent if the holder declines.', speaker_notes='No further context.')
+    assert not outline_consistency_risks(json.dumps(outline))
+    second = dict(first, slide_id='slide-2', body='The wallet transmits a refusal signal.', speaker_notes='Signal only.')
+    outline['slides'].append(second)
+    findings = outline_consistency_risks(json.dumps(outline))
+    assert {p['slide_position'] for p in findings[0]['passages']} == {1, 2}
+    first['body'] = 'No attribute data is sent if the holder declines.'
+    assert not outline_consistency_risks(json.dumps(outline))
+
+
+def test_consistency_and_cutoff_blockers_both_reach_revision() -> None:
+    """Adding consistency findings cannot erase an existing cutoff diagnostic."""
+    from src.app import draft_hash, validate_draft_review, revision_instruction
+    outline = timed_outline(60, 0)
+    slide = outline['slides'][0]
+    prefix = 'No data is sent if the holder declines. '
+    slide.update(body=prefix + 'x' * (419 - len(prefix) - 4) + ' the',
+                 speaker_notes='The verifier receives a refusal signal.', flow_steps=['Request', 'Decline'])
+    draft = json.dumps(outline)
+    author = {'bulter_id': 'a', 'output': draft, 'status': 'completed',
+              'section_id': 'section-1', 'draft_revision': 1}
+    output = json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{
+        'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic',
+        'evidence_quotes': [prefix.strip()]}]})
+    result = validate_draft_review(output, author, ['Complete and consistent'], 'r')
+    assert result['blocking_checks'] == ['suspected_body_cutoff', 'suspected_outline_contradiction']
+    instruction = revision_instruction({'assessment': result})
+    assert 'shorter' in instruction and 'consistency_findings' in instruction

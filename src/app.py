@@ -768,6 +768,39 @@ def outline_completion_risks(output: str) -> list[int]:
     return positions
 
 
+def outline_consistency_risks(output: str) -> list[dict]:
+    """Find narrow explicit conflicting assertions, not general semantic correctness."""
+    try:
+        outline = parse_presentation_outline(output)
+    except ValueError:
+        return []
+    passages = [(position, field, getattr(slide, field))
+                for position, slide in enumerate(outline.slides, 1)
+                for field in ['body', 'speaker_notes'] if getattr(slide, field)]
+    patterns = [
+        ('refusal_data_signal',
+         r'\bno data is sent if the holder (?:declines|refuses)\b',
+         r'\b(?:verifier receives|wallet (?:sends|transmits)) (?:a |the )?refusal signal\b'),
+        ('post_disclosure_control',
+         r'\b(?:holder maintains control over the attribute.s lifecycle|prevents later misuse of disclosed data)\b',
+         r'\b(?:may not be enforceable in practice|does not enforce purpose.bound use after disclosure)\b'),
+    ]
+    findings = []
+    for kind, claim_pattern, limitation_pattern in patterns:
+        sides = []
+        for pattern in [claim_pattern, limitation_pattern]:
+            sides.append([{'slide_position': p, 'field': field, 'start': match.start(),
+                           'end': match.end(), 'text': match.group(0)}
+                          for p, field, text in passages
+                          if (match := re.search(pattern, text, re.I))])
+        claims, limits = sides
+        if claims and limits:
+            # Full fields already remain in the prior draft. Locate exact excerpts
+            # without duplicating whole paragraphs in the bounded revision context.
+            findings.append({'kind': kind, 'passages': claims + limits})
+    return findings
+
+
 def validate_draft_review(output: str, author: dict, criteria: list[str], reviewer_id: str, artifact_paragraphs: list[str] | None = None) -> dict:
     """Fail closed on malformed, stale, forged or incomplete model assessments."""
     record = {"reviewer_id": reviewer_id, "author_id": author["bulter_id"],
@@ -856,6 +889,14 @@ def validate_draft_review(output: str, author: dict, criteria: list[str], review
                             + ', '.join(map(str, risks))
                             + ". Revise or inspect the complete thought; model PASS is insufficient. "
                             "This conservative signal does not establish grammatical completeness elsewhere.")
+    conflicts = outline_consistency_risks(author['output']) if artifact_paragraphs is None else []
+    if conflicts:
+        record.setdefault('blocking_checks', []).append('suspected_outline_contradiction')
+        record.update(state='needs_revision', consistency_findings=conflicts)
+        if not risks:
+            record.update(error_code='suspected_outline_contradiction',
+                          error='Possible conflicting assertions in slide bodies or notes. Resolve the recorded '
+                                'passages and their scope; model PASS does not clear this conservative signal.')
     return record
 
 
@@ -868,6 +909,17 @@ def revision_instruction(feedback: dict) -> str:
                         "complete sentences or complete concise bullets, well below their layout ceilings. "
                         "Do not copy the clipped bodies unchanged or merely append punctuation. Preserve intended meaning, "
                         "slide IDs, timings and source evidence; retain supporting detail in bounded speaker notes. ")
+    if 'suspected_outline_contradiction' in (feedback.get('assessment') or {}).get('blocking_checks', []):
+        instruction += ('Resolve the exact consistency_findings passages throughout bodies, notes and flow labels. '
+                        'Distinguish no identity attributes from no transmitted data when a refusal signal is sent. '
+                        'Distinguish future wallet disclosure controls from guarantees over data already held by a verifier; '
+                        'do not claim enforceable revocation or prevention of misuse when the stated limitation denies it. '
+                        'Preserve the limitations, slide IDs, timings and source evidence. Do not merely delete the '
+                        'qualifications or copy the contradictory wording unchanged. Return compact JSON without '
+                        'indentation. Shorten repetitive speaker notes to fit the stated output allowance while '
+                        'retaining operation, failure handling and limitations. Where verifier compliance is not '
+                        'enforceable, describe a revocation request rather than guaranteed verifier deletion or '
+                        'cessation; update the corresponding flow labels as well as prose. ')
     return instruction
 
 
