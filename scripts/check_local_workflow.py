@@ -53,9 +53,24 @@ def inspect_mission(mission: dict) -> dict:
             invalid += 1
         slides += len(outline.slides)
         seconds += sum(slide.duration_seconds for slide in outline.slides) + outline.discussion_seconds
-    complete = (mission.get('status') == 'completed' and len(mission.get('steps', [])) == 12
-                and invalid == 0 and slides == 18 and seconds == 1800)
+    steps = mission.get('steps', [])
+    completed_calls = sum(step.get('status') == 'completed' for step in steps)
+    review_states: dict[str, int] = {}
+    for step in steps[1::2]:
+        # Report only known states/counts, never raw generated content or provider errors.
+        state = step.get('review', {}).get('state', 'unverified')
+        if state not in {'criteria_pass', 'needs_revision', 'invalid'}:
+            state = 'unverified'
+        review_states[state] = review_states.get(state, 0) + 1
+    consistency = mission.get('section_consistency_check', {}).get('state', 'unverified')
+    if consistency not in {'no_signal', 'needs_revision', 'invalid'}:
+        consistency = 'unverified'
+    complete = (mission.get('status') == 'completed' and len(steps) == 12 and completed_calls == 12
+                and invalid == 0 and slides == 18 and seconds == 1800
+                and review_states == {'criteria_pass': 6} and consistency == 'no_signal')
     return {'status': mission.get('status'), 'steps': len(mission.get('steps', [])),
+            'completed_calls': completed_calls, 'review_states': review_states,
+            'combined_consistency': consistency,
             'slides': slides, 'declared_seconds': seconds, 'invalid_outlines': invalid,
             'scale_checks_pass': complete, 'user_acceptance': mission.get('acceptance_status'),
             'content_quality': 'not_assessed', 'rendered_quality': 'not_assessed'}

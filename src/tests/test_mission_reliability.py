@@ -2514,14 +2514,43 @@ def test_scale_check_does_not_accept_incomplete_or_wrong_duration() -> None:
     import json
     outline = {'slides': [{'slide_id': f'slide-{i}', 'title': 'Fictional', 'body': 'Example',
         'speaker_notes': 'Synthetic', 'duration_seconds': 100} for i in range(3)], 'discussion_seconds': 0}
-    steps = [step for _ in range(6) for step in [{'output': json.dumps(outline)}, {'output': 'review'}]]
-    mission = {'status': 'completed', 'steps': steps, 'acceptance_status': 'not_assessed'}
+    steps = [step for _ in range(6) for step in [{'output': json.dumps(outline), 'status': 'completed'},
+                                               {'output': 'review', 'status': 'completed', 'review': {'state': 'criteria_pass'}}]]
+    mission = {'status': 'completed', 'steps': steps, 'acceptance_status': 'not_assessed',
+               'section_consistency_check': {'state': 'no_signal'}}
     assert inspect_mission(mission)['scale_checks_pass'] is True
     assert inspect_mission(mission)['content_quality'] == 'not_assessed'
     assert inspect_mission({**mission, 'steps': steps[:-2]})['scale_checks_pass'] is False
     assert inspect_mission({**mission, 'status': 'completed_with_issues'})['scale_checks_pass'] is False
     outline['discussion_seconds'] = 1
     steps[0] = {'output': json.dumps(outline)}
+    assert inspect_mission(mission)['scale_checks_pass'] is False
+
+
+@pytest.mark.parametrize('status', ['partial', 'running', 'failed', None])
+def test_scale_check_distinguishes_call_completion_from_review_findings(status: str | None) -> None:
+    """Valid JSON and model PASS cannot mask an incomplete call or aggregate findings."""
+    from scripts.check_local_workflow import inspect_mission
+    outline = {'slides': [{'slide_id': f'slide-{i}', 'title': 'Synthetic', 'body': 'Example',
+        'speaker_notes': '', 'duration_seconds': 100} for i in range(3)], 'discussion_seconds': 0}
+    steps = [step for _ in range(6) for step in [
+        {'output': json.dumps(outline), 'status': 'completed'},
+        {'output': 'PRIVATE_GENERATED_TEXT', 'status': 'completed', 'review': {'state': 'criteria_pass'}}]]
+    steps[0]['status'] = status
+    mission = {'status': 'completed', 'steps': steps,
+        'section_consistency_check': {'state': 'needs_revision'}, 'acceptance_status': 'not_assessed'}
+    summary = inspect_mission(mission)
+    assert summary['scale_checks_pass'] is False
+    assert summary['completed_calls'] == 11
+    assert summary['review_states'] == {'criteria_pass': 6}
+    assert summary['combined_consistency'] == 'needs_revision'
+    assert summary['content_quality'] == 'not_assessed'
+    assert 'PRIVATE_GENERATED_TEXT' not in json.dumps(summary)
+    steps[0]['status'] = 'completed'
+    assert inspect_mission(mission)['scale_checks_pass'] is False
+    mission['section_consistency_check'] = {'state': 'no_signal'}
+    assert inspect_mission(mission)['scale_checks_pass'] is True
+    steps[-1]['review']['state'] = 'invalid'
     assert inspect_mission(mission)['scale_checks_pass'] is False
 
 
