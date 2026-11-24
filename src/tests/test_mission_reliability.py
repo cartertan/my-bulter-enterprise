@@ -3268,6 +3268,48 @@ def test_targeted_repair_requires_bound_unchanged_native_consistency_finding() -
     assert targeted_revision_base({}) is None
 
 
+@pytest.mark.parametrize('claim,limitation', [
+    ('This distinction prevents later misuse of disclosed data.',
+     'This workflow does not enforce purpose-bound usage after disclosure.'),
+    ('Revocation stops the verifier from using the attribute.',
+     'Failure: If the verifier ignores revocation, the holder cannot enforce it in this fictional model.'),
+])
+def test_fresh_post_disclosure_variants_keep_exact_evidence(claim: str, limitation: str) -> None:
+    """Fresh observed contradictions must block even when their wording differs slightly."""
+    from src.app import outline_consistency_risks, validate_draft_review, draft_hash
+    outline = timed_outline(60, 0)
+    outline['slides'][0].update(body=claim, speaker_notes=limitation)
+    draft = json.dumps(outline)
+    findings = outline_consistency_risks(draft)
+    assert len(findings) == 1 and findings[0]['kind'] == 'post_disclosure_control'
+    for passage in findings[0]['passages']:
+        field = outline['slides'][passage['slide_position']-1][passage['field']]
+        assert field[passage['start']:passage['end']] == passage['text']
+    review = json.dumps({'draft_hash': draft_hash(draft), 'criteria': [{
+        'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic false PASS', 'evidence_quotes': [claim]}]})
+    result = validate_draft_review(review, {'output': draft, 'bulter_id': 'author',
+        'section_id': 'section-1', 'draft_revision': 1, 'status': 'completed'}, ['Consistent claims'], 'reviewer')
+    assert result['state'] == 'needs_revision'
+    assert result['criteria'][0]['result'] == 'pass'
+
+
+@pytest.mark.parametrize('claim', [
+    'Revocation does not stop the verifier from using the attribute.',
+    'Revocation stops the verifier from using the attribute only if the verifier cooperates.',
+    'Revocation stops the verifier from using the attribute when the verifier cooperates.',
+    'If the verifier cooperates, revocation stops the verifier from using the attribute.',
+    'The claim "Revocation stops the verifier from using the attribute" is incorrect.',
+    'Do not claim that revocation stops the verifier from using the attribute.',
+])
+def test_revocation_signal_preserves_qualified_or_rebutted_claims(claim: str) -> None:
+    """The sampled assertion must not turn conditionals or explicit rebuttals into blockers."""
+    from src.app import outline_consistency_risks
+    outline = timed_outline(60, 0)
+    outline['slides'][0].update(body=claim, speaker_notes=(
+        'If the verifier ignores revocation, the holder cannot enforce it in this fictional model.'))
+    assert outline_consistency_risks(json.dumps(outline)) == []
+
+
 @pytest.mark.parametrize('bad_hash', [False, True])
 def test_unchanged_revision_uses_validated_edits_before_review(tmp_path: Path, bad_hash: bool) -> None:
     """A second repair reviews the applied outline; rejected edits never reach a reviewer."""

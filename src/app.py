@@ -783,8 +783,11 @@ def outline_consistency_risks(output: str) -> list[dict]:
          r'\b(?:verifier receives|wallet (?:sends|transmits)) (?:a |the )?refusal signal\b'),
         ('post_disclosure_control',
          r"(?:the )?holder maintains control over the attribute['’]s lifecycle\b|"
-         r'(?:this distinction|consent binding) prevents later misuse of disclosed data\b',
-         r'\b(?:may not be enforceable in practice|does not enforce purpose.bound use after disclosure)\b'),
+         r'(?:this distinction|consent binding) prevents later misuse of disclosed data\b|'
+         # Restrict the new revocation claim to a complete assertion, not a conditional.
+         r'revocation stops the verifier from using the attribute(?=\s*(?:[.!?]|$))',
+         r'\b(?:may not be enforceable in practice|does not enforce purpose.bound (?:use|usage) after disclosure|'
+         r'if the verifier ignores revocation, the holder cannot enforce it)\b'),
     ]
     findings = []
     for kind, claim_pattern, limitation_pattern in patterns:
