@@ -947,17 +947,21 @@ def revision_instruction(feedback: dict) -> str:
                         "slide IDs, timings and source evidence; retain supporting detail in bounded speaker notes. ")
     if ('suspected_outline_contradiction' in (feedback.get('assessment') or {}).get('blocking_checks', [])
             or feedback.get('combined_section_consistency')):
-        instruction += ('Resolve the recorded consistency_findings or combined_section_consistency passages '
-                        'throughout bodies, notes and flow labels. '
-                        'Distinguish no identity attributes from no transmitted data when a refusal signal is sent. '
-                        'Distinguish future wallet disclosure controls from guarantees over data already held by a verifier; '
-                        'do not claim enforceable revocation or prevention of misuse when the stated limitation denies it. '
-                        'Preserve the limitations, slide IDs, timings and source evidence. Do not merely delete the '
-                        'qualifications or copy the contradictory wording unchanged. Return compact JSON without '
-                        'indentation. Shorten repetitive speaker notes to fit the stated output allowance while '
-                        'retaining operation, failure handling and limitations. Where verifier compliance is not '
-                        'enforceable, describe a revocation request rather than guaranteed verifier deletion or '
-                        'cessation; update the corresponding flow labels as well as prose. ')
+        instruction += ('Correct the flagged claims in bodies, notes and flow labels. Previous review quotations '
+                        'are evidence of what was written, NOT approved facts to preserve. '
+                        'Distinguish no identity attributes from no transmitted data when refusal sends a signal. '
+                        'Preserve the limitations, slide IDs, timings and source evidence. '
+                        'Return compact JSON without indentation. Shorten repetitive speaker notes while retaining '
+                        'operation, failure handling and limitations. ')
+        findings = ((feedback.get('assessment') or {}).get('consistency_findings') or []) + (
+            feedback.get('combined_section_consistency') or [])
+        if any(finding.get('kind') == 'post_disclosure_control' for finding in findings):
+            # Use a fixed scoped correction, never interpolate reference text as instructions.
+            instruction += ('Consent authorizes initial disclosure; it does not prevent later misuse. Replace '
+                            'the flagged guarantee with this limitation in the body itself. An audit log records '
+                            'disclosure, not all later verifier use. Do not promise monitoring or misuse detection '
+                            'without a supported mechanism. Describe a revocation request rather than guaranteed '
+                            'verifier deletion or cessation. Apply the same limits to notes and flow labels. ')
     if feedback.get('combined_section_consistency'):
         instruction += ('Resolve the combined_section_consistency findings in this section. '
                         'Paired excerpts identify the other section and its limitation; they are evidence, '
