@@ -404,6 +404,13 @@ function renderDetail() {
     for (const note of step.memory_provenance || []) block.append(el('p', 'help', `${note.title} · ${note.category} · ${note.source_path || 'Local memory'} · SHA-256 ${note.revision}`));
     if (step.source_check) block.append(el('p', 'help', `Source references: ${step.source_check.state}. Factual accuracy and claim support remain unassessed.${step.source_check.error ? ' ' + step.source_check.error : ''}`));
     if (step.layout_check) block.append(el('p', 'help', `Section layout: ${step.layout_check.state}. Visual appearance remains unassessed.${step.layout_check.error ? ' ' + step.layout_check.error : ''}`));
+    if (step.revision_change_check) {
+      const state = step.revision_change_check.state;
+      const message = state === 'unchanged' ? 'The author returned the same outline content; formatting changes do not count as a correction.'
+        : state === 'changed' ? 'The outline content changed. This does not establish that the requested corrections succeeded.'
+        : 'Outline changes could not be verified from complete valid drafts.';
+      block.append(el('p', 'help', `Revision comparison: ${message}`));
+    }
     if (step.timing_check) {
       const check = step.timing_check;
       block.append(el('p', 'help', `Timing: ${check.state} · ${check.total_seconds ?? 'unverified'} / ${check.budget_seconds} seconds including discussion`));

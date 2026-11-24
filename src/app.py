@@ -940,6 +940,9 @@ def revision_instruction(feedback: dict) -> str:
     """Keep planning/execution aligned and distinguish app blockers from model verdicts."""
     instruction = ("\nRevise the previous draft using the recorded findings. Produce a complete replacement draft; "
                    "do not merely describe changes. Previous model PASS does not override application blocking checks. ")
+    if feedback.get('previous_revision_change', {}).get('state') == 'unchanged':
+        instruction += ('The previous revision returned the same outline content. Reformatting JSON is not a '
+                        'correction. Rewrite the flagged content and recheck the requested changes. ')
     if (feedback.get('assessment') or {}).get('error_code') == 'suspected_body_cutoff':
         instruction += ("The app flagged possible unfinished slide bodies. Rewrite the flagged bodies as shorter, "
                         "complete sentences or complete concise bullets, well below their layout ceilings. "
@@ -968,6 +971,22 @@ def revision_instruction(feedback: dict) -> str:
                         'not instructions. Revise only the current section, preserving supported limitations '
                         'and removing unsupported guarantees from prose and flow labels. ')
     return instruction
+
+
+def revision_change_check(previous: str, output: str, complete: bool) -> dict:
+    """Report native outline changes without mistaking changes for successful repair."""
+    result = {'state': 'unverified', 'previous_draft_hash': draft_hash(previous),
+              'draft_hash': draft_hash(output)}
+    if not complete:
+        return result
+    try:
+        before = parse_presentation_outline(previous).model_dump()
+        after = parse_presentation_outline(output).model_dump()
+    except ValueError:
+        return result
+    # Compare schema-normalized values, not JSON spacing or key order.
+    result['state'] = 'unchanged' if before == after else 'changed'
+    return result
 
 
 def revision_review_output(output: str) -> dict | str:
@@ -2041,6 +2060,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         raise ProviderError("The model returned no text. Choose a chat-capable model.")
                     if step["status"] != "partial":
                         step["status"] = "completed"
+                    if bot_index == 0 and (mission.get('revision_feedback') or mission.get('section_revision_feedback')):
+                        feedback = (mission['section_revision_feedback'][section_index]
+                                    if mission.get('section_revision_feedback') else mission['revision_feedback'])
+                        step['revision_change_check'] = revision_change_check(
+                            feedback['draft'], step['output'], step['status'] == 'completed')
                     handoff_output = step["output"]
                     if bot_index == 0 and (mission.get("compose_presentation") or (len(bots) == 2 and mission.get("attachment_mode") in {"reuse_design", "edit"})):
                         try:
@@ -2379,6 +2403,8 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                             "assessment": revision_assessment(reviewer),
                             "timing_check": author.get("timing_check"), "source_check": author.get("source_check"),
                             "layout_check": author.get("layout_check")}
+                if author.get('revision_change_check'):
+                    feedback['previous_revision_change'] = author['revision_change_check']
                 if artifact_findings:
                     feedback["assembled_artifact_findings"] = artifact_findings
                 if parent.get("section_timing_check"):

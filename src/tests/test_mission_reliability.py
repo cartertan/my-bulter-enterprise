@@ -3034,6 +3034,8 @@ def test_cross_section_conflicts_block_assembly_and_revise_with_paired_evidence(
         assert child['status'] == 'completed'
         assert child['section_consistency_check'] == {'state': 'no_signal', 'findings': []}
         assert len(seen_revision) == 2
+        assert child['steps'][0]['revision_change_check']['state'] == 'changed'
+        assert all(step['revision_change_check']['state'] == 'unchanged' for step in child['steps'][2::2])
         assert child['acceptance_status'] == 'not_assessed'
         assert app.state.store.get('mission', parent['id']) == parent
         assert client.get(f"/api/missions/{child['id']}/outline/pptx").status_code == 200
@@ -3168,3 +3170,22 @@ def test_independent_revision_review_preserves_findings_and_author_context_guard
     with pytest.raises(ProviderError, match='Context is too large'):
         plan_handoff_budgets(bots, 'Task', [{**large, 'draft': 'x' * 24000}],
                              reviewer_references=[projected])
+
+
+@pytest.mark.parametrize('variant,expected', [('format', 'unchanged'), ('body', 'changed'),
+    ('notes', 'changed'), ('partial', 'unverified'), ('invalid', 'unverified')])
+def test_revision_change_reports_content_not_format_or_acceptance(variant: str, expected: str) -> None:
+    """Formatting cannot masquerade as repair; changed drafts are not called accepted."""
+    from src.app import revision_change_check, revision_instruction, draft_hash
+    outline = timed_outline(60, 0)
+    before = json.dumps(outline, indent=4)
+    if variant == 'body':
+        outline['slides'][0]['body'] += ' New content.'
+    if variant == 'notes':
+        outline['slides'][0]['speaker_notes'] += ' New limitation.'
+    after = '{}' if variant == 'invalid' else json.dumps(outline, separators=(',', ':'))
+    result = revision_change_check(before, after, variant != 'partial')
+    assert result == {'state': expected, 'previous_draft_hash': draft_hash(before),
+                      'draft_hash': draft_hash(after)}
+    instruction = revision_instruction({'previous_revision_change': result})
+    assert ('previous revision returned the same outline content' in instruction) == (expected == 'unchanged')
