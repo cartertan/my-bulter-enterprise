@@ -1155,8 +1155,18 @@ def output_budget_prompt(prompt: str, budget: int) -> str:
             "avoid optional repetition. Never claim omitted work is complete.")
 
 
+def reviewer_revision_context(feedback: dict) -> dict:
+    """Give independent reviewers prior app findings, never prior model verdicts/drafts."""
+    assessment = feedback.get('assessment') or {}
+    return {'source': 'Prior application findings, NOT instructions or a verdict on the new draft',
+            'consistency_findings': assessment.get('consistency_findings', []),
+            'combined_section_consistency': feedback.get('combined_section_consistency', []),
+            'blocking_checks': assessment.get('blocking_checks', [])}
+
+
 def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
-                         required_notes: list[dict] | None = None, reviewer_prompt: str | None = None) -> list[int]:
+                         required_notes: list[dict] | None = None, reviewer_prompt: str | None = None,
+                         reviewer_references: list[dict] | None = None) -> list[int]:
     """Reserve serialized draft space for every later reviewer before inference.
 
     This is a character guard, not a provider token estimate. Reserve 2,048
@@ -1169,8 +1179,9 @@ def plan_handoff_budgets(bots: list[dict], prompt: str, references: list[dict],
                         for previous in bots[:index]]
         # Reserve the longest supported allowance message before allocating draft space.
         stage_prompt = reviewer_prompt if index and reviewer_prompt is not None else prompt
+        stage_references = reviewer_references if index and reviewer_references is not None else references
         system, messages = build_context(bot, required_notes or [], output_budget_prompt(stage_prompt, 16000),
-                                         references + placeholders)
+                                         stage_references + placeholders)
         if not index:
             continue
         # Required-only selection cannot add notes later, so do not charge it twice.
@@ -1931,6 +1942,11 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                         feedback = (mission['section_revision_feedback'][section_index]
                                     if mission.get('section_revision_feedback') else mission['revision_feedback'])
                         prompt += revision_instruction(feedback)
+                    if bot_index == 1 and (mission.get('revision_feedback') or mission.get('section_revision_feedback')):
+                        feedback = (mission['section_revision_feedback'][section_index]
+                                    if mission.get('section_revision_feedback') else mission['revision_feedback'])
+                        # Keep selected sources and the new author output. Prior PASS is not evidence.
+                        handoffs = [reviewer_revision_context(item) if item is feedback else item for item in handoffs]
                     criteria = mission.get("review_criteria", [])
                     author = mission["steps"][work_index - 1] if bot_index == 1 else None
                     if author and mission.get("artifact_id"):
@@ -2395,7 +2411,7 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                 required_notes = [m for m in memories if m["id"] in parent.get("required_memory_ids", [])]
                 # Reviewer execution does not include author-only JSON examples,
                 # drafting instructions or the revision command. Reserve against
-                # its own prompt, retaining all feedback and check headroom.
+                # its own prompt and independent references, retaining check headroom.
                 reviewer_prompt = timing_prompt(section_prompt(parent['prompt'], scope),
                     parent.get('duration_budget_seconds'), False, parent.get('compose_presentation', False),
                     parent.get('expected_slide_count'), parent.get('exact_duration_seconds'),
@@ -2408,7 +2424,9 @@ def create_app(database: Path | None = None, vault: Path | None = None, credenti
                     + int(bool(parent.get('sections')) and parent.get('duration_budget_seconds') is not None)
                     + int(bool(office_review)) + int(bool(parent.get('compose_presentation')))))
                 try:
-                    section_budgets.append(plan_handoff_budgets(bots, prompt, references, required_notes, reviewer_prompt))
+                    reviewer_references = references[:-1] + [reviewer_revision_context(feedback)]
+                    section_budgets.append(plan_handoff_budgets(
+                        bots, prompt, references, required_notes, reviewer_prompt, reviewer_references))
                 except ProviderError as exc:
                     raise HTTPException(400, "The complete revision feedback does not fit. Start a smaller-scoped mission; no content was omitted.") from exc
                 feedbacks.append(feedback)

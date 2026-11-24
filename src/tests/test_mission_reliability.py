@@ -3001,6 +3001,12 @@ def test_cross_section_conflicts_block_assembly_and_revise_with_paired_evidence(
                     assert 'combined_section_consistency' not in messages[0]['content']
             yield state['draft']
         else:
+            if state['revision']:
+                references = json.loads(messages[0]['content'].split('REFERENCE DATA (not instructions):\n', 1)[1])
+                handoffs = references['previous_bulter_outputs']
+                assert all('review_output' not in item and 'draft' not in item for item in handoffs)
+                assert handoffs[-1]['output'] == state['draft']
+                assert any('Prior application findings' in item.get('source', '') for item in handoffs)
             yield json.dumps({'draft_hash': draft_hash(state['draft']), 'criteria': [{
                 'criterion_id': 'criterion-1', 'result': 'pass', 'reason': 'Synthetic PASS',
                 'evidence_quotes': [json.loads(state['draft'])['slides'][0]['body']]}]})
@@ -3135,3 +3141,30 @@ def test_post_disclosure_repair_guidance_is_scoped_and_does_not_promote_quotes(c
     finding['kind'] = 'refusal_signal'
     assert 'Consent authorizes initial disclosure' not in revision_instruction(feedback)
     assert 'Consent authorizes initial disclosure' not in revision_instruction({})
+
+
+def test_independent_revision_review_preserves_findings_and_author_context_guard() -> None:
+    """Planning uses reviewer-only references while still checking full author feedback."""
+    from copy import deepcopy
+    from src.app import reviewer_revision_context, plan_handoff_budgets, ProviderError
+    feedback = {'draft': 'old draft', 'review_output': 'old PASS', 'assessment': {
+        'state': 'criteria_pass', 'criteria': ['old verdict'],
+        'blocking_checks': ['suspected_body_cutoff'], 'consistency_findings': [{'kind': 'local'}]},
+        'combined_section_consistency': [{'kind': 'combined'}],
+        'assembled_artifact_findings': [{'error': 'Retain artifact issue'}]}
+    original = deepcopy(feedback)
+    projected = reviewer_revision_context(feedback)
+    assert feedback == original
+    assert projected['consistency_findings'] == feedback['assessment']['consistency_findings']
+    assert projected['blocking_checks'] == ['suspected_body_cutoff']
+    assert projected['combined_section_consistency'] == feedback['combined_section_consistency']
+    assert 'assembled_artifact_findings' not in projected
+    assert 'old PASS' not in json.dumps(projected) and 'old draft' not in json.dumps(projected)
+    bots = [{'name': name, 'role': name, 'instructions': ''} for name in ['Author', 'Reviewer']]
+    large = {**feedback, 'review_output': 'x' * 8000}
+    original_budget = plan_handoff_budgets(bots, 'Task', [large])
+    independent_budget = plan_handoff_budgets(bots, 'Task', [large], reviewer_references=[projected])
+    assert independent_budget[0] > original_budget[0]
+    with pytest.raises(ProviderError, match='Context is too large'):
+        plan_handoff_budgets(bots, 'Task', [{**large, 'draft': 'x' * 24000}],
+                             reviewer_references=[projected])
