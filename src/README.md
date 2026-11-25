@@ -1,5 +1,11 @@
 ## My Bulter Enterprise
 
+### Reliability remediation
+
+See the [prioritized remediation pipeline](docs/REMEDIATION_PLAN.md) for implementation order, acceptance gates and remaining limitations. Run `python scripts/check_release.py` from the repository root with the project environment to execute the local release checks without publishing.
+
+Multi-Bulter reference missions can explicitly enable **partial-output review**. If a preceding Bulter exhausts its output limit, the next selected Bulter may inspect the flagged incomplete draft. The run remains `completed_with_issues` and cannot export an Office deliverable. Other errors still stop execution. A completed run does not mean an accepted presentation or verified facts.
+
 A local-first, single-user AI team dashboard built with Codex. Each **Bulter** has a name, specialty, instructions, provider, model and explicit memory access. A **mission** passes one brief through one to four Bulters in the order you choose.
 
 ### Account connectors added 27 October 2026
@@ -104,7 +110,7 @@ For centralized note management, use the [Obsidian integration](docs/OBSIDIAN.md
 - Browser: buildless HTML/CSS/JavaScript, served from the same FastAPI process. All user and model text uses safe DOM text nodes, not HTML.
 - Backend: FastAPI, HTTPX provider adapters and SQLite persistence. SQLite statements are parameterized; files are private to the current OS account.
 - Execution: one active mission; at most four sequential calls; no autonomous delegation, tools or external actions.
-- Generation: 2,048 output tokens per call where supported; 16,000-character response cap; ten-minute mission timeout. Provider idle timeout is 180 seconds.
+- Generation: 2,048 output tokens by default, configurable from 512 to 8,192 per Bulter; 16,000-character response cap; ten-minute mission timeout. Provider idle timeout is 180 seconds.
 - Context: rejects constructed context over 24,000 characters. This is a conservative application limit, not exact model token accounting; some models may reject or truncate smaller inputs. Model-specific tokenizer budgeting remains future work.
 - Streaming: provider text is saved incrementally; the browser refreshes active mission results every 1.2 seconds.
 - Persistence: `src/.runtime/bulter.sqlite3`. Set the process variable `BULTER_DATA_DIR` to an approved location to change it. No backups run automatically; stop the app before copying the database.
@@ -156,3 +162,11 @@ The home-page model concierge table maps work requirements to installed models. 
 - Model responses and teammate outputs are untrusted. Prompt instructions reduce accidental confusion but do not establish a hard prompt-injection security boundary. No shell, browser, email or filesystem tools are exposed to models.
 - Privacy controls apply to explicit notes. They cannot identify confidential data you type into a cloud-approved brief or prevent a model from restating data already in that brief.
 - Local applications and model runtimes may have their own networking/logging behaviour. The dashboard adds no analytics, external fonts or tracking.
+
+## Mission attachments
+
+Upload documents and photos directly to individual missions, analyze references, reuse an Office design, or propose precise edits to an existing DOCX/PPTX. See [mission attachment guide](docs/MISSION_ATTACHMENTS.md) for supported formats, local vision requirements, privacy boundaries and export limitations.
+
+## Learning and lessons learned
+
+Use the [Learning Lab](docs/learning/README.md) for an end-to-end product-management case study of My Bulter Enterprise, a GitHub-based Codex delivery workflow, and reusable planning, issue, review and handover templates. Actual development evidence is separated from recommended future practice.

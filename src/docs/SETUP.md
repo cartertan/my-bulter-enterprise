@@ -55,7 +55,7 @@ python3 -m pip install -r src/requirements.txt
 | pytest | 9.0.3 | Automated verification |
 | PyYAML | 6.0.3 | Safely parse approved Obsidian note properties |
 
-SQLite is included with Python. Pydantic and Starlette arrive through FastAPI. These are pinned direct dependencies, not a hash-locked complete dependency graph. The initial build reused installed packages; a fresh internet-based dependency installation has not been separately certified.
+SQLite is included with Python. Pydantic and Starlette arrive through FastAPI. These are pinned direct dependencies, not a hash-locked complete dependency graph. A fresh Python 3.12.4 virtual environment was installed from this requirements file on 6 November 2026 and passed the release checks. This validates that tested Mac environment, not every operating system or future transitive dependency resolution.
 
 ### 4. Start your local model runtime
 
