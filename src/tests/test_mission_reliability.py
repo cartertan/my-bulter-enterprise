@@ -3402,3 +3402,45 @@ def test_unchanged_revision_uses_validated_edits_before_review(tmp_path: Path, b
         assert final['acceptance_status'] == 'not_assessed'
         assert app.state.store.get('mission', first['id']) == first
         assert app.state.store.get('mission', parent['id']) == parent
+
+
+def test_artifact_reference_lossless_and_bounded() -> None:
+    """Reconstruct content and canonical provenance without losing exact quotation text."""
+    from src.app import draft_hash, section_review_reference
+    metadata = dict(mission_id='m', assembled_slide_id='slide', section_id='section',
+                    source_slide_id='source', draft_sha256='a' * 64, reviewer_id='reviewer',
+                    artifact_review='not_assessed', user_acceptance='not_assessed')
+    canonical = 'Speaker notes: ' + json.dumps(metadata, sort_keys=True)
+    paragraphs = [canonical, 'A repeated exact sentence with Unicode café and "quotes".\n  Next!  ',
+                  '', 'Speaker notes: {"mission_id":"first","mission_id":"second"}',
+                  'Speaker notes: ' + json.dumps(metadata, indent=2)] * 20
+    raw = json.dumps({'artifact_sha256': 'artifact', 'paragraphs': paragraphs}, ensure_ascii=False)
+    evidence = dict(review_text=raw, review_text_sha256=draft_hash(raw), artifact_sha256='artifact')
+    compact = section_review_reference(evidence)
+    decoded = []
+    for item in compact['paragraphs']:
+        if isinstance(item, str):
+            decoded.append(item)
+        elif isinstance(item, list):
+            decoded.append(''.join(compact['shared_text'][part] if isinstance(part, int) else part for part in item))
+        else:
+            encoding = compact['provenance_encoding']
+            record = {key: encoding['values'][i][item['provenance_row'][i]]
+                      for i, key in enumerate(encoding['fields'])}
+            decoded.append(encoding['prefix'] + json.dumps(record, sort_keys=True))
+    assert decoded == paragraphs
+    assert evidence['review_text'] == raw
+    assert compact['review_text_sha256'] == draft_hash(raw)
+    assert len(json.dumps(compact, ensure_ascii=False)) < len(raw)
+
+
+@pytest.mark.parametrize('tamper', ['review_text_sha256', 'artifact_sha256'])
+def test_artifact_reference_rejects_tampering(tamper: str) -> None:
+    """Compaction cannot bypass projection integrity validation."""
+    from src.app import draft_hash, section_review_reference
+    raw = json.dumps({'artifact_sha256': 'artifact', 'paragraphs': ['Short text']})
+    evidence = dict(review_text=raw, review_text_sha256=draft_hash(raw), artifact_sha256='artifact')
+    assert section_review_reference(evidence)['output'] == raw
+    evidence[tamper] = 'changed'
+    with pytest.raises(ValueError, match='integrity'):
+        section_review_reference(evidence)
