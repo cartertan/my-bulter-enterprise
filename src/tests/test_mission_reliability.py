@@ -3444,3 +3444,20 @@ def test_artifact_reference_rejects_tampering(tamper: str) -> None:
     evidence[tamper] = 'changed'
     with pytest.raises(ValueError, match='integrity'):
         section_review_reference(evidence)
+
+
+def test_artifact_prompt_preserves_requirements_without_native_array_instructions() -> None:
+    """Artifact scope keeps all criteria and integrity requirements without native-only guidance."""
+    from src.app import criteria_prompt
+    criteria = ['Native flow evidence: Actors and order agree.', 'Maximum retained draft words: 150']
+    task = 'Preserve this exact user task.'
+    prompt = criteria_prompt(task, criteria, 'a' * 64, artifact_scope=True)
+    assert task in prompt and all(item in prompt for item in criteria)
+    assert 'a' * 64 in prompt and 'inclusive limit' in prompt
+    assert 'quote both incompatible claims' in prompt and 'conflicting notes' in prompt
+    assert 'quote original text, not encoding indexes' in prompt
+    assert 'full canonical JSON array quotation' not in prompt
+    native = criteria_prompt(task, criteria, 'a' * 64)
+    assert 'full canonical JSON array quotation' in native
+    assert len(prompt) < len(native)
+    assert criteria_prompt(task, criteria, artifact_scope=True) == criteria_prompt(task, criteria)
