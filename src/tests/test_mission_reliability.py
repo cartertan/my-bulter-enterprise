@@ -2554,6 +2554,44 @@ def test_scale_check_distinguishes_call_completion_from_review_findings(status: 
     assert inspect_mission(mission)['scale_checks_pass'] is False
 
 
+@pytest.mark.parametrize('terminal', ['completed', 'failed', 'completed_with_issues'])
+def test_scale_runner_follows_child_ids_and_stops_at_explicit_limit(terminal: str) -> None:
+    """Parent-first listings must not be mistaken for the child; no unrequested retries."""
+    from unittest.mock import Mock
+    from scripts.check_local_workflow import exercise_revisions
+    parent = {'id': 'parent', 'status': 'completed_with_issues', 'steps': []}
+    child = {'id': 'child', 'status': terminal, 'steps': []}
+    client = Mock()
+    client.post.return_value.json.return_value = {'id': 'child'}
+    client.get.return_value.json.return_value = {'missions': [parent, child]}
+    assert exercise_revisions(client, parent, 0) == parent
+    client.post.assert_not_called()
+    assert exercise_revisions(client, parent, 1) == child
+    client.post.assert_called_once_with('/api/missions/parent/revise', json={})
+    client.post.reset_mock()
+    if terminal != 'completed_with_issues':
+        assert exercise_revisions(client, child, 2) == child
+        client.post.assert_not_called()
+    with pytest.raises(ValueError, match='two revision'):
+        exercise_revisions(client, parent, 3)
+
+
+def test_scale_runner_rejects_changed_parent_or_missing_child() -> None:
+    """A revision test must fail if provenance changes or its child cannot be located."""
+    from unittest.mock import Mock
+    from scripts.check_local_workflow import exercise_revisions
+    parent = {'id': 'parent', 'status': 'completed_with_issues', 'steps': []}
+    client = Mock()
+    client.post.return_value.json.return_value = {'id': 'child'}
+    client.get.return_value.json.return_value = {'missions': [parent]}
+    with pytest.raises(ValueError, match='missing'):
+        exercise_revisions(client, parent, 1)
+    client.get.return_value.json.return_value = {'missions': [
+        {**parent, 'status': 'failed'}, {'id': 'child', 'status': 'completed', 'steps': []}]}
+    with pytest.raises(ValueError, match='parent record'):
+        exercise_revisions(client, parent, 1)
+
+
 @pytest.mark.parametrize('images', [[], ['selected']])
 def test_auto_layout_schema_enforces_flow_body_budget(images: list[str]) -> None:
     """A long text-only slide stays valid, but diagrams use the smaller body panel."""

@@ -1,6 +1,6 @@
 """Run an opt-in, isolated local-model section workflow through the application API.
 
-Inputs: Explicit --run-local consent and two downloaded Ollama model IDs.
+Inputs: Explicit --run-local consent, two downloaded Ollama model IDs and optional revision rounds.
 Outputs: Sanitized check summary; isolated database retained in a temporary directory.
 Assumptions: Local Ollama is available; no paid providers or real user notes are used.
 This synthetic scale check does not establish researched content or final acceptance.
@@ -76,17 +76,52 @@ def inspect_mission(mission: dict) -> dict:
             'content_quality': 'not_assessed', 'rendered_quality': 'not_assessed'}
 
 
+def observe_mission(client: TestClient, identifier: str) -> dict:
+    """Observe the requested attempt, not whichever mission is listed first."""
+    deadline = time.monotonic() + 660
+    while True:
+        response = client.get('/api/state')
+        response.raise_for_status()
+        mission = next((item for item in response.json()['missions'] if item['id'] == identifier), None)
+        if mission is None:
+            raise ValueError('The requested isolated attempt is missing.')
+        if mission['status'] not in {'queued', 'running'}:
+            return mission
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Bounded observation deadline reached; no acceptance claimed.')
+        time.sleep(1)
+
+
+def exercise_revisions(client: TestClient, mission: dict, rounds: int) -> dict:
+    """Exercise at most two explicit revision rounds and verify immutable parents."""
+    if rounds not in (0, 1, 2):
+        raise ValueError('At most two revision rounds are supported.')
+    for round_number in range(1, rounds + 1):
+        if mission['status'] != 'completed_with_issues':
+            break
+        parent = mission
+        response = client.post(f"/api/missions/{parent['id']}/revise", json={})
+        response.raise_for_status()
+        mission = observe_mission(client, response.json()['id'])
+        if observe_mission(client, parent['id']) != parent:
+            raise ValueError('Revision changed its parent record.')
+        LOGGER.info('Revision %d: %s', round_number, json.dumps(inspect_mission(mission), sort_keys=True))
+    return mission
+
+
 def main() -> int:
-    """Run twelve bounded local calls only after explicit command-line opt-in."""
+    """Run an initial local attempt and explicitly requested bounded revisions."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-local', action='store_true')
     parser.add_argument('--author-model', default='qwen3.8:27b')
     parser.add_argument('--reviewer-model', default='granite4.1:30b')
+    parser.add_argument('--revision-rounds', type=int, choices=[0, 1, 2], default=0,
+                        help='Optional app revision attempts after issues; up to 12 extra local calls per round.')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     LOGGER.setLevel(logging.INFO)
     if not args.run_local:
-        parser.error('--run-local is required; this test makes up to twelve local model calls')
+        parser.error('--run-local is required; each attempt makes up to twelve local model calls')
     root = Path(tempfile.mkdtemp(prefix='bulter-scale-review-'))
     try:
         app = create_app(root / 'isolated.sqlite3')
@@ -100,15 +135,9 @@ def main() -> int:
                 bots.append(response.json()['id'])
             response = client.post('/api/missions', json=mission_payload(bots))
             response.raise_for_status()
-            deadline = time.monotonic() + 660
-            while True:
-                mission = client.get('/api/state').json()['missions'][0]
-                if mission['status'] not in {'queued', 'running'}:
-                    break
-                if time.monotonic() >= deadline:
-                    LOGGER.error('Bounded observation deadline reached; no acceptance claimed.')
-                    return 1
-                time.sleep(1)
+            mission = observe_mission(client, response.json()['id'])
+            LOGGER.info('Initial attempt: %s', json.dumps(inspect_mission(mission), sort_keys=True))
+            mission = exercise_revisions(client, mission, args.revision_rounds)
             summary = inspect_mission(mission)
             LOGGER.info('%s', json.dumps(summary, sort_keys=True))
             LOGGER.info('Isolated records retained at %s; do not publish runtime records.', root)
@@ -116,6 +145,7 @@ def main() -> int:
     except Exception as exc:
         # Response bodies may contain generated content; log only the failure type.
         LOGGER.error('Local workflow check failed (%s); no acceptance claimed.', type(exc).__name__)
+        LOGGER.info('Isolated records retained at %s; do not publish runtime records.', root)
         return 1
 
 
